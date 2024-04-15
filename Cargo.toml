@@ -1,0 +1,42 @@
+
+[workspace]
+members = ["server", "client"]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Kirill Lykov"]
+repository = "https://github.com/tobedone"
+license = "MIT"
+edition = "2021"
+
+
+[workspace.dependencies]
+anyhow = "1.0.22"
+directories-next = "2"
+tokio = { version = "1.28.1", features = [
+    "rt",
+    "rt-multi-thread",
+    "time",
+    "macros",
+    "sync",
+] }
+rustls = { version = "0.21.0" }
+rustls-pemfile = "1.0.0"
+tracing = "0.1.10"
+tracing-subscriber = { version = "0.3.0", default-features = false, features = [
+    "env-filter",
+    "fmt",
+    "ansi",
+    "time",
+    "local-time",
+] }
+tracing-futures = { version = "0.2.0", default-features = false, features = [
+    "std-future",
+] }
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
+url = "2"
+quinn = { git = "https://github.com/quinn-rs/quinn.git" }
+rcgen = "0.12.0"

@@ -1,0 +1,21 @@
+[package]
+name = "server"
+version = { workspace = true }
+edition = { workspace = true }
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { workspace = true }
+directories-next = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-futures = { workspace = true }
+rand = { workspace = true }
+clap = { workspace = true }
+url = { workspace = true }
+quinn = { workspace = true }
+rcgen = { workspace = true }
