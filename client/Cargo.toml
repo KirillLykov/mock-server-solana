@@ -6,7 +6,7 @@ edition = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = { workspace = true }
+thiserror = { workspace = true }
 directories-next = { workspace = true }
 tokio = { workspace = true }
 rustls = { workspace = true }
@@ -19,3 +19,11 @@ clap = { workspace = true }
 url = { workspace = true }
 quinn = { workspace = true }
 rcgen = { workspace = true }
+solana-streamer = { workspace = true }
+solana-sdk = { workspace = true }
+log = { workspace = true }
+itertools = { workspace = true }
+bincode = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+rand_chacha = { workspace = true }

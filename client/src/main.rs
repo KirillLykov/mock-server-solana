@@ -3,81 +3,103 @@
 //! Checkout the `README.md` for guidance.
 
 use {
-    anyhow::{anyhow, Result},
-    clap::Parser,
-    quinn::{ClientConfig, Endpoint},
-    std::{
-        error::Error,
-        fs,
-        io::{self, Write},
-        net::{SocketAddr, ToSocketAddrs},
-        path::PathBuf,
-        sync::Arc,
-        time::{Duration, Instant},
+    client::{
+        cli::{build_cli_parameters, ClientCliParameters},
+        transaction_generator::generate_dummy_data,
+        QuicError, QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT,
     },
-    tracing::{error, info},
-    url::Url,
+    futures::future::join_all,
+    quinn::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig},
+    solana_sdk::signature::Keypair,
+    solana_streamer::{
+        nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
+        // on master, renamed to tls_certificates::new_dummy_x509_certificate,
+        tls_certificates::new_self_signed_tls_certificate,
+    },
+    std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+        time::Instant,
+    },
 };
 
-#[allow(unused)]
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+// Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
+struct SkipServerVerification;
 
-/// Constructs a QUIC endpoint configured for use a client only.
-///
-/// ## Args
-///
-/// - server_certs: list of trusted certificates.
-#[allow(unused)]
-pub fn make_client_endpoint(
+impl SkipServerVerification {
+    fn new() -> Arc<Self> {
+        Arc::new(Self)
+    }
+}
+impl rustls::client::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
+}
+
+// copy-pasted from agave
+pub struct QuicClientCertificate {
+    pub certificate: rustls::Certificate,
+    pub key: rustls::PrivateKey,
+}
+
+impl Default for QuicClientCertificate {
+    fn default() -> Self {
+        let (certificate, key) =
+            new_self_signed_tls_certificate(&Keypair::new(), IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+                .expect("Creating TLS certificate should not fail.");
+        Self { certificate, key }
+    }
+}
+
+fn create_client_config(client_certificate: Arc<QuicClientCertificate>) -> ClientConfig {
+    // taken from QuicLazyInitializedEndpoint::create_endpoint
+    let mut crypto = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(SkipServerVerification::new())
+        .with_client_auth_cert(
+            vec![client_certificate.certificate.clone()],
+            client_certificate.key.clone(),
+        )
+        .expect("Failed to set QUIC client certificates");
+    crypto.enable_early_data = true;
+    crypto.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
+
+    let mut config = ClientConfig::new(Arc::new(crypto));
+    let mut transport_config = TransportConfig::default();
+
+    let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
+    transport_config.max_idle_timeout(Some(timeout));
+    transport_config.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
+    config.transport_config(Arc::new(transport_config));
+
+    config
+}
+
+fn create_client_endpoint(
     bind_addr: SocketAddr,
-    server_certs: &[&[u8]],
-) -> Result<Endpoint, Box<dyn Error>> {
-    let client_cfg = configure_client(server_certs)?;
+    client_config: ClientConfig,
+) -> Result<Endpoint, QuicError> {
     let mut endpoint = Endpoint::client(bind_addr)?;
-    endpoint.set_default_client_config(client_cfg);
+    endpoint.set_default_client_config(client_config);
     Ok(endpoint)
 }
 
-/// Builds default quinn client config and trusts given certificates.
-///
-/// ## Args
-///
-/// - server_certs: a list of trusted certificates in DER format.
-fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Error>> {
-    let mut certs = rustls::RootCertStore::empty();
-    for cert in server_certs {
-        certs.add(&rustls::Certificate(cert.to_vec()))?;
-    }
+// was called _send_buffer_using_conn
+async fn send_data_over_stream(connection: &Connection, data: &[u8]) -> Result<(), QuicError> {
+    let mut send_stream = connection.open_uni().await?;
 
-    let client_config = ClientConfig::with_root_certificates(certs);
-    Ok(client_config)
-}
-
-/// HTTP/0.9 over QUIC client
-#[derive(Parser, Debug)]
-#[clap(name = "client")]
-struct Opt {
-    /// Perform NSS-compatible TLS key logging to the file specified in `SSLKEYLOGFILE`.
-    #[clap(long = "keylog")]
-    keylog: bool,
-
-    url: Url,
-
-    /// Override hostname used for certificate verification
-    #[clap(long = "host")]
-    host: Option<String>,
-
-    /// Custom certificate authority to trust, in DER format
-    #[clap(long = "ca")]
-    ca: Option<PathBuf>,
-
-    /// Simulate NAT rebinding after connecting
-    #[clap(long = "rebind")]
-    rebind: bool,
-
-    /// Address to bind on
-    #[clap(long = "bind", default_value = "[::]:0")]
-    bind: SocketAddr,
+    send_stream.write_all(data).await?;
+    send_stream.finish().await?;
+    Ok(())
 }
 
 fn main() {
@@ -87,7 +109,7 @@ fn main() {
             .finish(),
     )
     .unwrap();
-    let opt = Opt::parse();
+    let opt = build_cli_parameters();
     let code = {
         if let Err(e) = run(opt) {
             eprintln!("ERROR: {e}");
@@ -100,105 +122,39 @@ fn main() {
 }
 
 #[tokio::main]
-async fn run(options: Opt) -> Result<()> {
-    let url = options.url;
-    let url_host = strip_ipv6_brackets(url.host_str().unwrap());
-    let remote = (url_host, url.port().unwrap_or(4433))
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow!("couldn't resolve to an address"))?;
+async fn run(parameters: ClientCliParameters) -> Result<(), QuicError> {
+    let client_certificate = Arc::new(QuicClientCertificate::default());
+    let client_config = create_client_config(client_certificate);
+    let endpoint = create_client_endpoint(parameters.bind, client_config)
+        .expect("Endpoint creation should not fail.");
 
-    let mut roots = rustls::RootCertStore::empty();
-    if let Some(ca_path) = options.ca {
-        roots.add(&rustls::Certificate(fs::read(ca_path)?))?;
-    } else {
-        let dirs = directories_next::ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
-        match fs::read(dirs.data_local_dir().join("cert.der")) {
-            Ok(cert) => {
-                roots.add(&rustls::Certificate(cert))?;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                info!("local server certificate not found");
-            }
-            Err(e) => {
-                error!("failed to open local server certificate: {}", e);
-            }
-        }
-    }
-    let mut client_crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-
-    client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    if options.keylog {
-        client_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
-    }
-
-    let client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
-    let mut endpoint = quinn::Endpoint::client(options.bind)?;
-    endpoint.set_default_client_config(client_config);
-
-    let request = format!("GET {}\r\n", url.path());
     let start = Instant::now();
-    let rebind = options.rebind;
-    let host = options.host.as_deref().unwrap_or(url_host);
 
-    eprintln!("connecting to {host} at {remote}");
-    let conn = endpoint
-        .connect(remote, host)?
-        .await
-        .map_err(|e| anyhow!("failed to connect: {}", e))?;
+    eprintln!("connecting to {}", parameters.target);
+    // We use QUIC_CONNECTION_HANDSHAKE_TIMEOUT which should not be used,
+    // max_idle_timeout will determine timeout
+    let connection = endpoint.connect(parameters.target, "connect")?.await?;
     eprintln!("connected at {:?}", start.elapsed());
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-    if rebind {
-        let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
-        let addr = socket.local_addr().unwrap();
-        eprintln!("rebinding to {addr}");
-        endpoint.rebind(socket).expect("rebind failed");
+
+    let num_tx_batches = 8;
+    let num_streams_per_connection = 256;
+    for _ in 0..num_tx_batches {
+        let transactions = generate_dummy_data(num_streams_per_connection, false);
+        // using join_all will run concurrently but not in parallel.
+        let futures = transactions.into_iter().map(|data| {
+            let conn = connection.clone();
+            async move { send_data_over_stream(&conn, &data).await }
+        });
+        let _results = join_all(futures).await;
+        // report if debug
     }
 
-    send.write_all(request.as_bytes())
-        .await
-        .map_err(|e| anyhow!("failed to send request: {}", e))?;
-    send.finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-    let response_start = Instant::now();
-    eprintln!("request sent at {:?}", response_start - start);
-    let resp = recv
-        .read_to_end(usize::max_value())
-        .await
-        .map_err(|e| anyhow!("failed to read response: {}", e))?;
-    let duration = response_start.elapsed();
-    eprintln!(
-        "response received in {:?} - {} KiB/s",
-        duration,
-        resp.len() as f32 / (duration_secs(&duration) * 1024.0)
-    );
-    io::stdout().write_all(&resp).unwrap();
-    io::stdout().flush().unwrap();
-    conn.close(0u32.into(), b"done");
+    let connection_stats = connection.stats();
+    eprint!("Connection stats: {:?}", connection_stats);
+    connection.close(0u32.into(), b"done");
 
     // Give the server a fair chance to receive the close packet
     endpoint.wait_idle().await;
 
     Ok(())
-}
-
-fn strip_ipv6_brackets(host: &str) -> &str {
-    // An ipv6 url looks like eg https://[::1]:4433/Cargo.toml, wherein the host [::1] is the
-    // ipv6 address ::1 wrapped in brackets, per RFC 2732. This strips those.
-    if host.starts_with('[') && host.ends_with(']') {
-        &host[1..host.len() - 1]
-    } else {
-        host
-    }
-}
-
-fn duration_secs(x: &Duration) -> f32 {
-    x.as_secs() as f32 + x.subsec_nanos() as f32 * 1e-9
 }
