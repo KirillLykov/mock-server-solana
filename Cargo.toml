@@ -14,6 +14,7 @@ edition = "2021"
 
 [workspace.dependencies]
 anyhow = "1.0.22"
+thiserror = "1.0.58"
 directories-next = "2"
 tokio = { version = "1.28.1", features = [
     "rt",
@@ -40,3 +41,17 @@ clap = { version = "4", features = ["derive"] }
 url = "2"
 quinn = { git = "https://github.com/quinn-rs/quinn.git" }
 rcgen = "0.12.0"
+#solana-net-utils = { version = "1.18.10" }
+#solana-logger = { version = "1.18.10"  }
+solana-streamer = { version = "1.18.10" }
+#solana-version = { version = "1.18.10" }
+#solana-quic-client = { version = "1.18.10" }
+#solana-client = { version = "1.18.10" }
+#solana-connection-cache = { version = "1.18.10"  }
+solana-sdk = { version = "1.18.10" }
+futures = "0.3.28"
+rand_chacha = "0.3.1"
+itertools = { version = "*" }
+bincode = { version = "*" }
+serde_json = { version = "*" }
+log = { version = "*" }
