@@ -6,7 +6,7 @@ use {
     client::{
         cli::{build_cli_parameters, ClientCliParameters},
         transaction_generator::generate_dummy_data,
-        QuicError, QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT,
+        QuicClientError, SkipServerVerification, QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT,
     },
     futures::future::join_all,
     quinn::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig},
@@ -22,28 +22,6 @@ use {
         time::Instant,
     },
 };
-
-// Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
-struct SkipServerVerification;
-
-impl SkipServerVerification {
-    fn new() -> Arc<Self> {
-        Arc::new(Self)
-    }
-}
-impl rustls::client::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
-    }
-}
 
 // copy-pasted from agave
 pub struct QuicClientCertificate {
@@ -87,14 +65,17 @@ fn create_client_config(client_certificate: Arc<QuicClientCertificate>) -> Clien
 fn create_client_endpoint(
     bind_addr: SocketAddr,
     client_config: ClientConfig,
-) -> Result<Endpoint, QuicError> {
+) -> Result<Endpoint, QuicClientError> {
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_config);
     Ok(endpoint)
 }
 
 // was called _send_buffer_using_conn
-async fn send_data_over_stream(connection: &Connection, data: &[u8]) -> Result<(), QuicError> {
+async fn send_data_over_stream(
+    connection: &Connection,
+    data: &[u8],
+) -> Result<(), QuicClientError> {
     let mut send_stream = connection.open_uni().await?;
 
     send_stream.write_all(data).await?;
@@ -122,7 +103,7 @@ fn main() {
 }
 
 #[tokio::main]
-async fn run(parameters: ClientCliParameters) -> Result<(), QuicError> {
+async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
     let client_certificate = Arc::new(QuicClientCertificate::default());
     let client_config = create_client_config(client_certificate);
     let endpoint = create_client_endpoint(parameters.bind, client_config)

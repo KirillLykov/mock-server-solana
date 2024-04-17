@@ -7,7 +7,6 @@ edition = { workspace = true }
 
 [dependencies]
 thiserror = { workspace = true }
-directories-next = { workspace = true }
 tokio = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
