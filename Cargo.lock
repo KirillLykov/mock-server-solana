@@ -2901,7 +2901,6 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "serde_json",
- "solana-logger",
  "solana-sdk",
  "solana-streamer",
  "thiserror",
