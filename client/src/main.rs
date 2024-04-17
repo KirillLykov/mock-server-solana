@@ -18,7 +18,6 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        result,
         sync::Arc,
         time::Instant,
     },

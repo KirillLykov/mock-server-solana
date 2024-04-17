@@ -4,7 +4,7 @@
 
 use {
     pem::Pem,
-    quinn::{Endpoint, IdleTimeout, ServerConfig},
+    quinn::{Chunk, Endpoint, IdleTimeout, ServerConfig},
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
@@ -148,12 +148,6 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
         let span = info_span!(
             "connection",
             remote = %connection.remote_address(),
-            protocol = %connection
-                .handshake_data()
-                .unwrap()
-                .downcast::<quinn::crypto::rustls::HandshakeData>().unwrap()
-                .protocol
-                .map_or_else(|| "<none>".into(), |x| String::from_utf8_lossy(&x).into_owned())
         );
         let _enter = span.enter();
         info!("Connection have been established.");
@@ -161,7 +155,7 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
         // Each stream initiated by the client constitutes a new request.
         loop {
             let stream = connection.accept_uni().await;
-            let stream = match stream {
+            let mut stream = match stream {
                 Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                     info!("connection closed");
                     return Ok(());
@@ -171,10 +165,18 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
                 }
                 Ok(s) => s,
             };
-            let fut = handle_stream_chunk_accumulation(stream);
+            // do the same as in the agave
+            let mut packet_accum: Option<PacketAccumulator> = None;
             tokio::spawn(async move {
-                if let Err(e) = fut.await {
-                    error!("failed: {reason}", reason = e.to_string());
+                loop {
+                    let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
+                        warn!("failed to read_chunk");
+                        continue; //not sure what to do in this case
+                    };
+                    let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
+                    if let Err(e) = res {
+                        error!("failed: {reason}", reason = e.to_string());
+                    }
                 }
             });
         }
@@ -184,27 +186,24 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
 }
 
 async fn handle_stream_chunk_accumulation(
-    mut stream: quinn::RecvStream,
+    chunk: Option<Chunk>,
+    packet_accum: &mut Option<PacketAccumulator>,
 ) -> Result<(), QuicServerError> {
-    let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
-        warn!("failed to read_chunk");
-        return Err(QuicServerError::FailedReadChunk);
-    };
-    // TODO(klykov): in agave, it is passed inside without any reason
-    // TODO(klykov) why we need to send None? we always send one tx in one stream, so what's the purpose?
-    let mut packet_accum: Option<PacketAccumulator> = None;
     if let Some(chunk) = chunk {
         debug!("got chunk");
         let chunk_len = chunk.bytes.len() as u64;
         // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
         // shouldn't happen, but sanity check the size and offsets
         if chunk.offset > PACKET_DATA_SIZE as u64 || chunk_len > PACKET_DATA_SIZE as u64 {
+            debug!("failed validation with chunk_len={chunk_len} > {PACKET_DATA_SIZE}");
             return Ok(());
         }
         let Some(end_of_chunk) = chunk.offset.checked_add(chunk_len) else {
+            debug!("failed validation on offset overflow");
             return Ok(());
         };
         if end_of_chunk > PACKET_DATA_SIZE as u64 {
+            debug!("failed validation on end_of_chunk={end_of_chunk} > {PACKET_DATA_SIZE}");
             return Ok(());
         }
 
@@ -214,7 +213,7 @@ async fn handle_stream_chunk_accumulation(
         if packet_accum.is_none() {
             let meta = Meta::default();
             //meta.set_socket_addr(remote_addr); don't care much in the context of this app
-            packet_accum = Some(PacketAccumulator {
+            *packet_accum = Some(PacketAccumulator {
                 meta,
                 chunks: Vec::new(),
                 start_time: Instant::now(),
@@ -223,6 +222,7 @@ async fn handle_stream_chunk_accumulation(
         if let Some(accum) = packet_accum.as_mut() {
             let offset = chunk.offset;
             let Some(end_of_chunk) = (chunk.offset as usize).checked_add(chunk.bytes.len()) else {
+                debug!("failed validation on offset overflow when accumulating chunks");
                 return Ok(());
             };
             accum.chunks.push(PacketChunk {
