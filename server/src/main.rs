@@ -1,26 +1,78 @@
-//! This example demonstrates an HTTP server that serves files from a directory.
+//! This example demonstrates quic server for handling incoming transactions.
 //!
 //! Checkout the `README.md` for guidance.
 
 use {
-    anyhow::{anyhow, bail, Context, Result},
-    clap::Parser,
-    quinn::{Endpoint, ServerConfig},
+    pem::Pem,
+    quinn::{Endpoint, IdleTimeout, ServerConfig},
+    server::{
+        cli::{build_cli_parameters, ServerCliParameters},
+        packet_accumulator::{PacketAccumulator, PacketChunk},
+        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT,
+        QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS, TIME_TO_HANDLE_ONE_TX,
+    },
+    //solana_logger,
+    solana_sdk::{
+        packet::{Meta, PACKET_DATA_SIZE},
+        signature::Keypair,
+    },
+    solana_streamer::{
+        nonblocking::quic::ALPN_TPU_PROTOCOL_ID, tls_certificates::new_self_signed_tls_certificate,
+    },
     std::{
-        ascii,
-        error::Error,
-        fs, io,
-        net::SocketAddr,
-        path::{self, Path, PathBuf},
-        str,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Arc,
+        time::Instant,
     },
     tracing::{error, info, info_span},
-    tracing_futures::Instrument as _,
 };
 
-#[allow(unused)]
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+/// Returns default server configuration along with its PEM certificate chain.
+#[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
+                                              // called configure_server in agave
+fn create_server_config(
+    identity_keypair: &Keypair,
+) -> Result<(ServerConfig, String), QuicServerError> {
+    let gossip_host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+    let (cert, priv_key) = new_self_signed_tls_certificate(identity_keypair, gossip_host)
+        .expect("Should be able to create certificate.");
+    let cert_chain_pem_parts = vec![Pem {
+        tag: "CERTIFICATE".to_string(),
+        contents: cert.0.clone(),
+    }];
+    let cert_chain_pem = pem::encode_many(&cert_chain_pem_parts);
+
+    let mut server_tls_config = rustls::ServerConfig::builder()
+        .with_safe_defaults()
+        .with_client_cert_verifier(SkipClientVerification::new())
+        .with_single_cert(vec![cert], priv_key)?;
+    server_tls_config.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
+
+    let mut server_config = ServerConfig::with_crypto(Arc::new(server_tls_config));
+    // Looks like it was removed from quinn
+    //server_config.use_retry(true);
+    let config = Arc::get_mut(&mut server_config.transport).unwrap();
+
+    // QUIC_MAX_CONCURRENT_STREAMS doubled, which was found to improve reliability
+    const MAX_CONCURRENT_UNI_STREAMS: u32 =
+        (QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS.saturating_mul(2)) as u32;
+    config.max_concurrent_uni_streams(MAX_CONCURRENT_UNI_STREAMS.into());
+    config.stream_receive_window((PACKET_DATA_SIZE as u32).into());
+    config.receive_window(
+        (PACKET_DATA_SIZE as u32)
+            .saturating_mul(MAX_CONCURRENT_UNI_STREAMS)
+            .into(),
+    );
+    let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
+    config.max_idle_timeout(Some(timeout));
+
+    // disable bidi & datagrams
+    const MAX_CONCURRENT_BIDI_STREAMS: u32 = 0;
+    config.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
+    config.datagram_receive_buffer_size(None);
+
+    Ok((server_config, cert_chain_pem))
+}
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
 /// and port.
@@ -29,66 +81,26 @@ pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
 ///
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
-#[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server()?;
-    let endpoint = Endpoint::server(server_config, bind_addr)?;
-    Ok((endpoint, server_cert))
-}
-
-/// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let priv_key = cert.serialize_private_key_der();
-    let priv_key = rustls::PrivateKey(priv_key);
-    let cert_chain = vec![rustls::Certificate(cert_der.clone())];
-
-    let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
-    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport_config.max_concurrent_uni_streams(0_u8.into());
-
-    Ok((server_config, cert_der))
-}
-
-#[derive(Parser, Debug)]
-#[clap(name = "server")]
-struct Opt {
-    /// file to log TLS keys to for debugging
-    #[clap(long = "keylog")]
-    keylog: bool,
-    /// directory to serve files from
-    root: PathBuf,
-    /// TLS private key in PEM format
-    #[clap(short = 'k', long = "key", requires = "cert")]
-    key: Option<PathBuf>,
-    /// TLS certificate in PEM format
-    #[clap(short = 'c', long = "cert", requires = "key")]
-    cert: Option<PathBuf>,
-    /// Enable stateless retries
-    #[clap(long = "stateless-retry")]
-    stateless_retry: bool,
-    /// Address to listen on
-    #[clap(long = "listen", default_value = "[::1]:4433")]
-    listen: SocketAddr,
-    /// Client address to block
-    #[clap(long = "block")]
-    block: Option<SocketAddr>,
-    /// Maximum number of concurrent connections to allow
-    #[clap(long = "connection-limit")]
-    connection_limit: Option<usize>,
+fn create_server_endpoint(
+    bind_addr: SocketAddr,
+    server_config: ServerConfig,
+) -> Result<Endpoint, QuicServerError> {
+    //TODO(klykov): this is done in spawn_server in streamer/src/nonblocking/quic.rs
+    // we use new instead of server for no reason there
+    Ok(Endpoint::server(server_config, bind_addr)?)
 }
 
 fn main() {
+    //solana_logger::setup();
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .finish(),
     )
     .unwrap();
-    let opt = Opt::parse();
+    let parameters = build_cli_parameters();
     let code = {
-        if let Err(e) = run(opt) {
+        if let Err(e) = run(parameters) {
             eprintln!("ERROR: {e}");
             1
         } else {
@@ -99,88 +111,13 @@ fn main() {
 }
 
 #[tokio::main]
-async fn run(options: Opt) -> Result<()> {
-    let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
-        let key = fs::read(key_path).context("failed to read private key")?;
-        let key = if key_path.extension().map_or(false, |x| x == "der") {
-            rustls::PrivateKey(key)
-        } else {
-            let pkcs8 = rustls_pemfile::pkcs8_private_keys(&mut &*key)
-                .context("malformed PKCS #8 private key")?;
-            match pkcs8.into_iter().next() {
-                Some(x) => rustls::PrivateKey(x),
-                None => {
-                    let rsa = rustls_pemfile::rsa_private_keys(&mut &*key)
-                        .context("malformed PKCS #1 private key")?;
-                    match rsa.into_iter().next() {
-                        Some(x) => rustls::PrivateKey(x),
-                        None => {
-                            anyhow::bail!("no private keys found");
-                        }
-                    }
-                }
-            }
-        };
-        let cert_chain = fs::read(cert_path).context("failed to read certificate chain")?;
-        let cert_chain = if cert_path.extension().map_or(false, |x| x == "der") {
-            vec![rustls::Certificate(cert_chain)]
-        } else {
-            rustls_pemfile::certs(&mut &*cert_chain)
-                .context("invalid PEM-encoded certificate")?
-                .into_iter()
-                .map(rustls::Certificate)
-                .collect()
-        };
-
-        (cert_chain, key)
-    } else {
-        let dirs = directories_next::ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
-        let path = dirs.data_local_dir();
-        let cert_path = path.join("cert.der");
-        let key_path = path.join("key.der");
-        let (cert, key) = match fs::read(&cert_path).and_then(|x| Ok((x, fs::read(&key_path)?))) {
-            Ok(x) => x,
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                info!("generating self-signed certificate");
-                let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-                let key = cert.serialize_private_key_der();
-                let cert = cert.serialize_der().unwrap();
-                fs::create_dir_all(path).context("failed to create certificate directory")?;
-                fs::write(&cert_path, &cert).context("failed to write certificate")?;
-                fs::write(&key_path, &key).context("failed to write private key")?;
-                (cert, key)
-            }
-            Err(e) => {
-                bail!("failed to read certificate: {}", e);
-            }
-        };
-
-        let key = rustls::PrivateKey(key);
-        let cert = rustls::Certificate(cert);
-        (vec![cert], key)
-    };
-
-    let mut server_crypto = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    if options.keylog {
-        server_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
-    }
-
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport_config.max_concurrent_uni_streams(0_u8.into());
-
-    let root = Arc::<Path>::from(options.root.clone());
-    if !root.exists() {
-        bail!("root path does not exist");
-    }
-
-    let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
+async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
+    let identity = Keypair::new();
+    let (server_config, _) = create_server_config(&identity)?;
+    let endpoint = create_server_endpoint(options.listen, server_config)?;
     eprintln!("listening on {}", endpoint.local_addr()?);
 
+    // can add handshake timeout here like in agave
     while let Some(conn) = endpoint.accept().await {
         if options
             .connection_limit
@@ -188,15 +125,12 @@ async fn run(options: Opt) -> Result<()> {
         {
             info!("refusing due to open connection limit");
             conn.refuse();
-        } else if Some(conn.remote_address()) == options.block {
-            info!("refusing blocked client IP address");
-            conn.refuse();
         } else if options.stateless_retry && !conn.remote_address_validated() {
             info!("requiring connection to validate its address");
-            conn.retry().unwrap();
+            conn.retry().unwrap(); // TODO(klykov): what does it mean?
         } else {
             info!("accepting connection");
-            let fut = handle_connection(root.clone(), conn);
+            let fut = handle_connection(conn);
             tokio::spawn(async move {
                 if let Err(e) = fut.await {
                     error!("connection failed: {reason}", reason = e.to_string())
@@ -208,9 +142,9 @@ async fn run(options: Opt) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(root: Arc<Path>, conn: quinn::Incoming) -> Result<()> {
+async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError> {
     let connection = conn.await?;
-    let span = info_span!(
+    let _span = info_span!(
         "connection",
         remote = %connection.remote_address(),
         protocol = %connection
@@ -225,7 +159,7 @@ async fn handle_connection(root: Arc<Path>, conn: quinn::Incoming) -> Result<()>
 
         // Each stream initiated by the client constitutes a new request.
         loop {
-            let stream = connection.accept_bi().await;
+            let stream = connection.accept_uni().await;
             let stream = match stream {
                 Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                     info!("connection closed");
@@ -236,82 +170,79 @@ async fn handle_connection(root: Arc<Path>, conn: quinn::Incoming) -> Result<()>
                 }
                 Ok(s) => s,
             };
-            let fut = handle_request(root.clone(), stream);
-            tokio::spawn(
-                async move {
-                    if let Err(e) = fut.await {
-                        error!("failed: {reason}", reason = e.to_string());
-                    }
+            let fut = handle_stream_chunk_accumulation(stream);
+            tokio::spawn(async move {
+                if let Err(e) = fut.await {
+                    error!("failed: {reason}", reason = e.to_string());
                 }
-                .instrument(info_span!("request")),
-            );
+            });
         }
     }
-    .instrument(span)
     .await?;
     Ok(())
 }
 
-async fn handle_request(
-    root: Arc<Path>,
-    (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
-) -> Result<()> {
-    let req = recv
-        .read_to_end(64 * 1024)
-        .await
-        .map_err(|e| anyhow!("failed reading request: {}", e))?;
-    let mut escaped = String::new();
-    for &x in &req[..] {
-        let part = ascii::escape_default(x).collect::<Vec<_>>();
-        escaped.push_str(str::from_utf8(&part).unwrap());
+async fn handle_stream_chunk_accumulation(
+    mut stream: quinn::RecvStream,
+) -> Result<(), QuicServerError> {
+    let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
+        info!("failed to read_chunk");
+        return Err(QuicServerError::FailedReadChunk);
+    };
+    // TODO(klykov): in agave, it is passed inside without any reaso
+    // TODO(klykov) why we need to send None? we always send one tx in one stream, so what's the purpose?
+    let mut packet_accum: Option<PacketAccumulator> = None;
+    if let Some(chunk) = chunk {
+        info!("got chunk");
+        let chunk_len = chunk.bytes.len() as u64;
+        // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
+        // shouldn't happen, but sanity check the size and offsets
+        if chunk.offset > PACKET_DATA_SIZE as u64 || chunk_len > PACKET_DATA_SIZE as u64 {
+            return Ok(());
+        }
+        let Some(end_of_chunk) = chunk.offset.checked_add(chunk_len) else {
+            return Ok(());
+        };
+        if end_of_chunk > PACKET_DATA_SIZE as u64 {
+            return Ok(());
+        }
+
+        // chunk looks valid
+        // accumulate chunks into packet but what's the reason
+        // if we stick with tx to be limited by PACKET_DATA_SIZE
+        if packet_accum.is_none() {
+            let meta = Meta::default();
+            //meta.set_socket_addr(remote_addr); don't care much in the context of this app
+            packet_accum = Some(PacketAccumulator {
+                meta,
+                chunks: Vec::new(),
+                start_time: Instant::now(),
+            });
+        }
+        if let Some(accum) = packet_accum.as_mut() {
+            let offset = chunk.offset;
+            let Some(end_of_chunk) = (chunk.offset as usize).checked_add(chunk.bytes.len()) else {
+                return Ok(());
+            };
+            accum.chunks.push(PacketChunk {
+                bytes: chunk.bytes,
+                offset: offset as usize,
+                end_of_chunk,
+            });
+
+            accum.meta.size = std::cmp::max(accum.meta.size, end_of_chunk);
+        }
+    } else {
+        //it means that the last chunk has been received, we put all the chunks accumulated to some channel
+        if let Some(accum) = packet_accum.take() {
+            handle_packet_bytes(accum).await;
+        }
     }
-    info!(content = %escaped);
-    // Execute the request
-    let resp = process_get(&root, &req).unwrap_or_else(|e| {
-        error!("failed: {}", e);
-        format!("failed to process request: {e}\n").into_bytes()
-    });
-    // Write the response
-    send.write_all(&resp)
-        .await
-        .map_err(|e| anyhow!("failed to send response: {}", e))?;
-    // Gracefully terminate the stream
-    send.finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+
     info!("complete");
     Ok(())
 }
 
-fn process_get(root: &Path, x: &[u8]) -> Result<Vec<u8>> {
-    if x.len() < 4 || &x[0..4] != b"GET " {
-        bail!("missing GET");
-    }
-    if x[4..].len() < 2 || &x[x.len() - 2..] != b"\r\n" {
-        bail!("missing \\r\\n");
-    }
-    let x = &x[4..x.len() - 2];
-    let end = x.iter().position(|&c| c == b' ').unwrap_or(x.len());
-    let path = str::from_utf8(&x[..end]).context("path is malformed UTF-8")?;
-    let path = Path::new(&path);
-    let mut real_path = PathBuf::from(root);
-    let mut components = path.components();
-    match components.next() {
-        Some(path::Component::RootDir) => {}
-        _ => {
-            bail!("path must be absolute");
-        }
-    }
-    for c in components {
-        match c {
-            path::Component::Normal(x) => {
-                real_path.push(x);
-            }
-            x => {
-                bail!("illegal component in path: {:?}", x);
-            }
-        }
-    }
-    let data = fs::read(&real_path).context("failed reading file")?;
-    Ok(data)
+async fn handle_packet_bytes(_chunk_sent: PacketAccumulator) {
+    tokio::time::sleep(TIME_TO_HANDLE_ONE_TX).await;
 }
