@@ -24,7 +24,7 @@ use {
         sync::Arc,
         time::Instant,
     },
-    tracing::{error, info, info_span},
+    tracing::{error, info, info_span, warn},
 };
 
 /// Returns default server configuration along with its PEM certificate chain.
@@ -115,7 +115,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let identity = Keypair::new();
     let (server_config, _) = create_server_config(&identity)?;
     let endpoint = create_server_endpoint(options.listen, server_config)?;
-    eprintln!("listening on {}", endpoint.local_addr()?);
+    info!("listening on {}", endpoint.local_addr()?);
 
     // can add handshake timeout here like in agave
     while let Some(conn) = endpoint.accept().await {
@@ -123,13 +123,13 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
             .connection_limit
             .map_or(false, |n| endpoint.open_connections() >= n)
         {
-            info!("refusing due to open connection limit");
+            warn!("refusing due to open connection limit");
             conn.refuse();
         } else if options.stateless_retry && !conn.remote_address_validated() {
-            info!("requiring connection to validate its address");
+            warn!("requiring connection to validate its address");
             conn.retry().unwrap(); // TODO(klykov): what does it mean?
         } else {
-            info!("accepting connection");
+            warn!("accepting connection");
             let fut = handle_connection(conn);
             tokio::spawn(async move {
                 if let Err(e) = fut.await {
@@ -155,7 +155,7 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
             .map_or_else(|| "<none>".into(), |x| String::from_utf8_lossy(&x).into_owned())
     );
     async {
-        info!("established");
+        info!("Connection have been established.");
 
         // Each stream initiated by the client constitutes a new request.
         loop {
@@ -193,7 +193,7 @@ async fn handle_stream_chunk_accumulation(
     // TODO(klykov) why we need to send None? we always send one tx in one stream, so what's the purpose?
     let mut packet_accum: Option<PacketAccumulator> = None;
     if let Some(chunk) = chunk {
-        info!("got chunk");
+        debug!("got chunk");
         let chunk_len = chunk.bytes.len() as u64;
         // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
         // shouldn't happen, but sanity check the size and offsets
@@ -239,7 +239,7 @@ async fn handle_stream_chunk_accumulation(
         }
     }
 
-    info!("complete");
+    info!("complete stream");
     Ok(())
 }
 
