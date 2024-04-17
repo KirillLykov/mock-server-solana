@@ -18,9 +18,11 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        result,
         sync::Arc,
         time::Instant,
     },
+    tracing::{debug, info},
 };
 
 // copy-pasted from agave
@@ -111,11 +113,9 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
 
     let start = Instant::now();
 
-    eprintln!("connecting to {}", parameters.target);
-    // We use QUIC_CONNECTION_HANDSHAKE_TIMEOUT which should not be used,
-    // max_idle_timeout will determine timeout
+    info!("connecting to {}", parameters.target);
     let connection = endpoint.connect(parameters.target, "connect")?.await?;
-    eprintln!("connected at {:?}", start.elapsed());
+    info!("connected at {:?}", start.elapsed());
 
     let num_tx_batches = 8;
     let num_streams_per_connection = 256;
@@ -126,12 +126,14 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
             let conn = connection.clone();
             async move { send_data_over_stream(&conn, &data).await }
         });
-        let _results = join_all(futures).await;
-        // report if debug
+        let results = join_all(futures).await;
+        for result in results {
+            debug!("{:?}", result);
+        }
     }
 
     let connection_stats = connection.stats();
-    eprint!("Connection stats: {:?}", connection_stats);
+    info!("Connection stats: {:?}", connection_stats);
     connection.close(0u32.into(), b"done");
 
     // Give the server a fair chance to receive the close packet

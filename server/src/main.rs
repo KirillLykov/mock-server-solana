@@ -24,7 +24,7 @@ use {
         sync::Arc,
         time::Instant,
     },
-    tracing::{error, info, info_span, warn},
+    tracing::{debug, error, info, info_span, warn},
 };
 
 /// Returns default server configuration along with its PEM certificate chain.
@@ -129,7 +129,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
             warn!("requiring connection to validate its address");
             conn.retry().unwrap(); // TODO(klykov): what does it mean?
         } else {
-            warn!("accepting connection");
+            info!("accepting connection");
             let fut = handle_connection(conn);
             tokio::spawn(async move {
                 if let Err(e) = fut.await {
@@ -144,17 +144,18 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
 
 async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError> {
     let connection = conn.await?;
-    let _span = info_span!(
-        "connection",
-        remote = %connection.remote_address(),
-        protocol = %connection
-            .handshake_data()
-            .unwrap()
-            .downcast::<quinn::crypto::rustls::HandshakeData>().unwrap()
-            .protocol
-            .map_or_else(|| "<none>".into(), |x| String::from_utf8_lossy(&x).into_owned())
-    );
     async {
+        let span = info_span!(
+            "connection",
+            remote = %connection.remote_address(),
+            protocol = %connection
+                .handshake_data()
+                .unwrap()
+                .downcast::<quinn::crypto::rustls::HandshakeData>().unwrap()
+                .protocol
+                .map_or_else(|| "<none>".into(), |x| String::from_utf8_lossy(&x).into_owned())
+        );
+        let _enter = span.enter();
         info!("Connection have been established.");
 
         // Each stream initiated by the client constitutes a new request.
@@ -186,10 +187,10 @@ async fn handle_stream_chunk_accumulation(
     mut stream: quinn::RecvStream,
 ) -> Result<(), QuicServerError> {
     let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
-        info!("failed to read_chunk");
+        warn!("failed to read_chunk");
         return Err(QuicServerError::FailedReadChunk);
     };
-    // TODO(klykov): in agave, it is passed inside without any reaso
+    // TODO(klykov): in agave, it is passed inside without any reason
     // TODO(klykov) why we need to send None? we always send one tx in one stream, so what's the purpose?
     let mut packet_accum: Option<PacketAccumulator> = None;
     if let Some(chunk) = chunk {
@@ -239,10 +240,14 @@ async fn handle_stream_chunk_accumulation(
         }
     }
 
-    info!("complete stream");
+    debug!("complete stream");
     Ok(())
 }
 
-async fn handle_packet_bytes(_chunk_sent: PacketAccumulator) {
+async fn handle_packet_bytes(accum: PacketAccumulator) {
+    debug!(
+        "Received data size {}",
+        accum.chunks.len() * PACKET_DATA_SIZE
+    );
     tokio::time::sleep(TIME_TO_HANDLE_ONE_TX).await;
 }
