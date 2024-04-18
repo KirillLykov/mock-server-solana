@@ -18,6 +18,9 @@ In a new terminal execute:
 $ cargo run --bin client localhost:4433
 ```
 
+
+Note that we don't use blockhash. This would require usage of RPC client.
+
 ## Questions
 
 1. There is stream priority, why don't we use it for staking?
