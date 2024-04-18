@@ -10,7 +10,7 @@ use {
     },
     futures::future::join_all,
     quinn::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig},
-    solana_sdk::signature::Keypair,
+    solana_sdk::{signature::Keypair, signer::EncodableKey},
     solana_streamer::{
         nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
         // on master, renamed to tls_certificates::new_dummy_x509_certificate,
@@ -32,8 +32,14 @@ pub struct QuicClientCertificate {
 
 impl Default for QuicClientCertificate {
     fn default() -> Self {
+        QuicClientCertificate::new(&Keypair::new())
+    }
+}
+
+impl QuicClientCertificate {
+    fn new(keypair: &Keypair) -> Self {
         let (certificate, key) =
-            new_self_signed_tls_certificate(&Keypair::new(), IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            new_self_signed_tls_certificate(keypair, IpAddr::V4(Ipv4Addr::UNSPECIFIED))
                 .expect("Creating TLS certificate should not fail.");
         Self { certificate, key }
     }
@@ -105,7 +111,13 @@ fn main() {
 
 #[tokio::main]
 async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
-    let client_certificate = Arc::new(QuicClientCertificate::default());
+    let client_certificate = if let Some(staked_identity_file) = parameters.staked_identity_file {
+        let staked_identity = Keypair::read_from_file(staked_identity_file)
+            .map_err(|_err| QuicClientError::KeypairReadFailure)?;
+        Arc::new(QuicClientCertificate::new(&staked_identity))
+    } else {
+        Arc::new(QuicClientCertificate::default())
+    };
     let client_config = create_client_config(client_certificate);
     let endpoint = create_client_endpoint(parameters.bind, client_config)
         .expect("Endpoint creation should not fail.");

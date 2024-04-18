@@ -24,6 +24,9 @@ pub enum QuicClientError {
 
     #[error(transparent)]
     EndpointError(#[from] io::Error),
+
+    #[error("Failed to read keypair file")]
+    KeypairReadFailure,
 }
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.

@@ -1,17 +1,24 @@
-use {clap::Parser, std::net::SocketAddr};
+use {
+    clap::{crate_description, crate_name, crate_version, Parser},
+    std::{net::SocketAddr, path::PathBuf},
+};
 
 #[derive(Parser, Debug)]
-#[clap(name = "client")]
+#[clap(name = crate_name!(),
+    version = crate_version!(),
+    about = crate_description!(),
+    rename_all = "kebab-case"
+)]
 pub struct ClientCliParameters {
     #[clap(long, help = "target")]
     pub target: SocketAddr,
 
-    /// Override hostname used for certificate verification
-    #[clap(long, help = "host")]
-    pub host: Option<String>,
+    // Cannot use value_parser to read keypair file because Keypair is not Clone.
+    #[clap(long, help = "validator identity for staked connection")]
+    pub staked_identity_file: Option<PathBuf>,
 
     /// Address to bind on, default will listen on all available interfaces, 0 that
-    ///  OS will choose the port.
+    /// OS will choose the port.
     #[clap(long, help = "bind", default_value = "0.0.0.0:0")]
     pub bind: SocketAddr,
 }

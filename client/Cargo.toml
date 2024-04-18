@@ -14,7 +14,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-futures = { workspace = true }
 rand = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, features = ["derive", "cargo"] }
 url = { workspace = true }
 quinn = { workspace = true }
 rcgen = { workspace = true }
