@@ -1,6 +1,6 @@
 
 [workspace]
-members = ["server", "client"]
+members = ["server", "client", "acktool"]
 
 resolver = "2"
 
