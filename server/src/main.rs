@@ -21,13 +21,16 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        process::exit,
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
         },
-        time::Instant,
+        time::{Duration, Instant},
     },
-    tracing::{debug, error, info, info_span, warn},
+    tokio::{signal, time::sleep},
+    tokio_util::sync::CancellationToken,
+    tracing::{debug, error, info, info_span, trace, warn},
 };
 
 /// Returns default server configuration along with its PEM certificate chain.
@@ -120,51 +123,75 @@ struct Stats {
     num_accepted_connections: AtomicU64,
     num_refused_connections: AtomicU64,
     num_connection_errors: AtomicU64,
-    num_failed_read_chunk: AtomicU64,
+    num_finished_streams: AtomicU64,
 }
 
 #[tokio::main]
 async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
+    let token = CancellationToken::new();
+    let stats = Arc::new(Stats::default());
+    // Spawn a task that listens for SIGINT (Ctrl+C)
+    let handler = tokio::spawn({
+        let token = token.clone();
+        async move {
+            if signal::ctrl_c().await.is_ok() {
+                println!("Received Ctrl+C, shutting down...");
+                token.cancel();
+            }
+        }
+    });
+
     let identity = Keypair::new();
     let (server_config, _) = create_server_config(&identity)?;
     let endpoint = create_server_endpoint(options.listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
 
-    let stats = Arc::new(Stats::default());
-    // can add handshake timeout here like in agave
-    while let Some(conn) = endpoint.accept().await {
-        if options
-            .connection_limit
-            .map_or(false, |n| endpoint.open_connections() >= n)
-        {
-            warn!("refusing due to open connection limit");
-            stats
-                .num_refused_connections
-                .fetch_add(1, Ordering::Relaxed);
-            conn.refuse();
-        } else if options.stateless_retry && !conn.remote_address_validated() {
-            warn!("requiring connection to validate its address");
-            conn.retry().unwrap(); // TODO(klykov): what does it mean?
-        } else {
-            info!("accepting connection");
-            stats
-                .num_accepted_connections
-                .fetch_add(1, Ordering::Relaxed);
-            let fut = handle_connection(conn, stats.clone());
-            tokio::spawn(async move {
-                if let Err(e) = fut.await {
-                    error!("connection failed: {reason}", reason = e.to_string())
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                println!("{stats:?}");
+                break;
+            }
+            conn = endpoint.accept() => {
+                let Some(conn) = conn else {
+                    continue;
+                };
+                if options
+                    .connection_limit
+                    .map_or(false, |n| endpoint.open_connections() >= n)
+                {
+                    warn!("refusing due to open connection limit");
+                    stats
+                        .num_refused_connections
+                        .fetch_add(1, Ordering::Relaxed);
+                    conn.refuse();
+                } else if options.stateless_retry && !conn.remote_address_validated() {
+                    warn!("requiring connection to validate its address");
+                    conn.retry().unwrap(); // TODO(klykov): what does it mean?
+                } else {
+                    info!("accepting connection");
+                    stats
+                        .num_accepted_connections
+                        .fetch_add(1, Ordering::Relaxed);
+                    let fut = handle_connection(conn, stats.clone(), token.clone());
+                    tokio::spawn(async move {
+                        if let Err(e) = fut.await {
+                            error!("connection failed: {reason}", reason = e.to_string())
+                        }
+                    });
                 }
-            });
+            }
         }
     }
 
+    let _ = handler.await;
     Ok(())
 }
 
 async fn handle_connection(
     conn: quinn::Incoming,
     stats: Arc<Stats>,
+    token: CancellationToken,
 ) -> Result<(), QuicServerError> {
     let connection = conn.await?;
     async {
@@ -177,6 +204,10 @@ async fn handle_connection(
 
         // Each stream initiated by the client constitutes a new request.
         loop {
+            if token.is_cancelled() {
+                warn!("JJJJJJ");
+                return Ok(());
+            }
             let stream = connection.accept_uni().await;
             let mut stream = match stream {
                 Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
@@ -192,19 +223,32 @@ async fn handle_connection(
             // do the same as in the agave
             let mut packet_accum: Option<PacketAccumulator> = None;
             let stats = stats.clone();
-            tokio::spawn(async move {
-                loop {
-                    let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
-                        warn!("failed to read_chunk");
-                        stats.num_failed_read_chunk.fetch_add(1, Ordering::Relaxed);
-                        continue; //not sure what to do in this case
-                    };
-                    let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
-                    if let Err(e) = res {
-                        error!("failed: {reason}", reason = e.to_string());
-                        stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn({
+                let token = token.clone();
+                async move {
+                    loop {
+                        if token.is_cancelled() {
+                            warn!("@@@");
+                            break;
+                        }
+                        let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
+                            debug!("Stream failed");
+                            stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
+                            break; // not sure if the right thing to do
+                        };
+                        let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
+                        if let Err(e) = res {
+                            error!("failed: {reason}", reason = e.to_string());
+                            stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                        if res.unwrap() {
+                            trace!("Finished stream.");
+                            break;
+                        }
+
+                        stats.num_received_streams.fetch_add(1, Ordering::SeqCst);
                     }
-                    stats.num_received_streams.fetch_add(1, Ordering::SeqCst);
                 }
             });
         }
@@ -213,63 +257,62 @@ async fn handle_connection(
     Ok(())
 }
 
+// returns if stream was closed
 async fn handle_stream_chunk_accumulation(
     chunk: Option<Chunk>,
     packet_accum: &mut Option<PacketAccumulator>,
-) -> Result<(), QuicServerError> {
-    if let Some(chunk) = chunk {
-        debug!("got chunk");
-        let chunk_len = chunk.bytes.len() as u64;
-        // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
-        // shouldn't happen, but sanity check the size and offsets
-        if chunk.offset > PACKET_DATA_SIZE as u64 || chunk_len > PACKET_DATA_SIZE as u64 {
-            debug!("failed validation with chunk_len={chunk_len} > {PACKET_DATA_SIZE}");
-            return Ok(());
-        }
-        let Some(end_of_chunk) = chunk.offset.checked_add(chunk_len) else {
-            debug!("failed validation on offset overflow");
-            return Ok(());
-        };
-        if end_of_chunk > PACKET_DATA_SIZE as u64 {
-            debug!("failed validation on end_of_chunk={end_of_chunk} > {PACKET_DATA_SIZE}");
-            return Ok(());
-        }
-
-        // chunk looks valid
-        // accumulate chunks into packet but what's the reason
-        // if we stick with tx to be limited by PACKET_DATA_SIZE
-        if packet_accum.is_none() {
-            let meta = Meta::default();
-            //meta.set_socket_addr(remote_addr); don't care much in the context of this app
-            *packet_accum = Some(PacketAccumulator {
-                meta,
-                chunks: Vec::new(),
-                start_time: Instant::now(),
-            });
-        }
-        if let Some(accum) = packet_accum.as_mut() {
-            let offset = chunk.offset;
-            let Some(end_of_chunk) = (chunk.offset as usize).checked_add(chunk.bytes.len()) else {
-                debug!("failed validation on offset overflow when accumulating chunks");
-                return Ok(());
-            };
-            accum.chunks.push(PacketChunk {
-                bytes: chunk.bytes,
-                offset: offset as usize,
-                end_of_chunk,
-            });
-
-            accum.meta.size = std::cmp::max(accum.meta.size, end_of_chunk);
-        }
-    } else {
+) -> Result<bool, QuicServerError> {
+    let Some(chunk) = chunk else {
         //it means that the last chunk has been received, we put all the chunks accumulated to some channel
         if let Some(accum) = packet_accum.take() {
             handle_packet_bytes(accum).await;
         }
+        return Ok(true);
+    };
+    let chunk_len = chunk.bytes.len() as u64;
+    debug!("got chunk of len: {chunk_len}");
+    // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
+    // shouldn't happen, but sanity check the size and offsets
+    if chunk.offset > PACKET_DATA_SIZE as u64 || chunk_len > PACKET_DATA_SIZE as u64 {
+        debug!("failed validation with chunk_len={chunk_len} > {PACKET_DATA_SIZE}");
+        return Err(QuicServerError::FailedReadChunk);
+    }
+    let Some(end_of_chunk) = chunk.offset.checked_add(chunk_len) else {
+        debug!("failed validation on offset overflow");
+        return Err(QuicServerError::FailedReadChunk);
+    };
+    if end_of_chunk > PACKET_DATA_SIZE as u64 {
+        debug!("failed validation on end_of_chunk={end_of_chunk} > {PACKET_DATA_SIZE}");
+        return Err(QuicServerError::FailedReadChunk);
     }
 
-    debug!("complete stream");
-    Ok(())
+    // chunk looks valid
+    // accumulate chunks into packet but what's the reason
+    // if we stick with tx to be limited by PACKET_DATA_SIZE
+    if packet_accum.is_none() {
+        let meta = Meta::default();
+        //meta.set_socket_addr(remote_addr); don't care much in the context of this app
+        *packet_accum = Some(PacketAccumulator {
+            meta,
+            chunks: Vec::new(),
+            start_time: Instant::now(),
+        });
+    }
+    if let Some(accum) = packet_accum.as_mut() {
+        let offset = chunk.offset;
+        let Some(end_of_chunk) = (chunk.offset as usize).checked_add(chunk.bytes.len()) else {
+            debug!("failed validation on offset overflow when accumulating chunks");
+            return Err(QuicServerError::FailedReadChunk);
+        };
+        accum.chunks.push(PacketChunk {
+            bytes: chunk.bytes,
+            offset: offset as usize,
+            end_of_chunk,
+        });
+
+        accum.meta.size = std::cmp::max(accum.meta.size, end_of_chunk);
+    }
+    Ok(false)
 }
 
 async fn handle_packet_bytes(accum: PacketAccumulator) {
