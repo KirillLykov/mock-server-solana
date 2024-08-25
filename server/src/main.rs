@@ -21,7 +21,10 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Arc,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
         time::Instant,
     },
     tracing::{debug, error, info, info_span, warn},
@@ -110,6 +113,16 @@ fn main() {
     ::std::process::exit(code);
 }
 
+#[derive(Debug, Default)]
+struct Stats {
+    num_received_streams: AtomicU64,
+    num_errored_streams: AtomicU64,
+    num_accepted_connections: AtomicU64,
+    num_refused_connections: AtomicU64,
+    num_connection_errors: AtomicU64,
+    num_failed_read_chunk: AtomicU64,
+}
+
 #[tokio::main]
 async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let identity = Keypair::new();
@@ -117,6 +130,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let endpoint = create_server_endpoint(options.listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
 
+    let stats = Arc::new(Stats::default());
     // can add handshake timeout here like in agave
     while let Some(conn) = endpoint.accept().await {
         if options
@@ -124,13 +138,19 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
             .map_or(false, |n| endpoint.open_connections() >= n)
         {
             warn!("refusing due to open connection limit");
+            stats
+                .num_refused_connections
+                .fetch_add(1, Ordering::Relaxed);
             conn.refuse();
         } else if options.stateless_retry && !conn.remote_address_validated() {
             warn!("requiring connection to validate its address");
             conn.retry().unwrap(); // TODO(klykov): what does it mean?
         } else {
             info!("accepting connection");
-            let fut = handle_connection(conn);
+            stats
+                .num_accepted_connections
+                .fetch_add(1, Ordering::Relaxed);
+            let fut = handle_connection(conn, stats.clone());
             tokio::spawn(async move {
                 if let Err(e) = fut.await {
                     error!("connection failed: {reason}", reason = e.to_string())
@@ -142,7 +162,10 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     Ok(())
 }
 
-async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError> {
+async fn handle_connection(
+    conn: quinn::Incoming,
+    stats: Arc<Stats>,
+) -> Result<(), QuicServerError> {
     let connection = conn.await?;
     async {
         let span = info_span!(
@@ -161,22 +184,27 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), QuicServerError>
                     return Ok(());
                 }
                 Err(e) => {
+                    stats.num_connection_errors.fetch_add(1, Ordering::Relaxed);
                     return Err(e);
                 }
                 Ok(s) => s,
             };
             // do the same as in the agave
             let mut packet_accum: Option<PacketAccumulator> = None;
+            let stats = stats.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, false).await else {
                         warn!("failed to read_chunk");
+                        stats.num_failed_read_chunk.fetch_add(1, Ordering::Relaxed);
                         continue; //not sure what to do in this case
                     };
                     let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
                     if let Err(e) = res {
                         error!("failed: {reason}", reason = e.to_string());
+                        stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
                     }
+                    stats.num_received_streams.fetch_add(1, Ordering::SeqCst);
                 }
             });
         }
