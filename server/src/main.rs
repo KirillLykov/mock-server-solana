@@ -37,6 +37,9 @@ use {
                                               // called configure_server in agave
 fn create_server_config(
     identity_keypair: &Keypair,
+    max_concurrent_streams: u32,
+    stream_receive_window_size: u32,
+    receive_window_size: u32,
 ) -> Result<(ServerConfig, String), QuicServerError> {
     let gossip_host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
     let (cert, priv_key) = new_self_signed_tls_certificate(identity_keypair, gossip_host)
@@ -65,8 +68,8 @@ fn create_server_config(
     // QUIC_MAX_CONCURRENT_STREAMS doubled, which was found to improve reliability
     //const MAX_CONCURRENT_UNI_STREAMS: u32 =
     //    (QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS.saturating_mul(2)) as u32;
-    config.max_concurrent_uni_streams((QUIC_MAX_STAKED_CONCURRENT_STREAMS as u32).into());
-    config.stream_receive_window((PACKET_DATA_SIZE as u32).into());
+    config.max_concurrent_uni_streams(max_concurrent_streams.into());
+    config.stream_receive_window(stream_receive_window_size.into());
     // was:
     //config.receive_window(
     //    (PACKET_DATA_SIZE as u32)
@@ -74,7 +77,7 @@ fn create_server_config(
     //        .into(),
     //);
     // now: (see compute_recieve_window)
-    config.receive_window((PACKET_DATA_SIZE as u32).saturating_mul(10).into());
+    config.receive_window(receive_window_size.into());
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
     config.max_idle_timeout(Some(timeout));
 
@@ -147,9 +150,23 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
         }
     });
 
+    let ServerCliParameters {
+        stateless_retry,
+        listen,
+        connection_limit,
+        max_concurrent_streams,
+        stream_receive_window_size,
+        receive_window_size,
+    } = options;
+
     let identity = Keypair::new();
-    let (server_config, _) = create_server_config(&identity)?;
-    let endpoint = create_server_endpoint(options.listen, server_config)?;
+    let (server_config, _) = create_server_config(
+        &identity,
+        max_concurrent_streams,
+        stream_receive_window_size,
+        receive_window_size,
+    )?;
+    let endpoint = create_server_endpoint(listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
 
     loop {
