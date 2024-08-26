@@ -21,7 +21,7 @@ pub struct ServerCliParameters {
     #[clap(long = "stream-receive-window-size", default_value = "1232")]
     pub stream_receive_window_size: u32,
 
-    #[clap(long = "stream-receive-window-size", default_value = "12320")]
+    #[clap(long = "receive-window-size", default_value = "12320")]
     pub receive_window_size: u32,
 }
 
