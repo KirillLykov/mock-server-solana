@@ -77,10 +77,9 @@ pub fn generate_transactions(count: usize, is_large: bool) -> Vec<Vec<u8>> {
         .collect_vec()
 }
 
-pub fn generate_dummy_data(count: usize, is_large: bool) -> Vec<Vec<u8>> {
+pub fn generate_dummy_data(is_large: bool) -> Vec<u8> {
     let size: usize = if is_large { 2000 } else { 200 };
-    let vec = (0..size)
+    (0..size)
         .map(|x| (x % (u8::MAX as usize)) as u8)
-        .collect_vec();
-    (0..count).map(|_| vec.clone()).collect_vec()
+        .collect_vec()
 }

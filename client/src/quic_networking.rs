@@ -101,6 +101,7 @@ pub async fn send_data_over_stream(
     let mut send_stream = connection.open_uni().await?;
 
     send_stream.write_all(data).await?;
-    send_stream.finish().await?;
+    //never do this
+    //send_stream.finish().await?;
     Ok(())
 }

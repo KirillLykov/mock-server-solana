@@ -21,14 +21,13 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        process::exit,
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
         },
-        time::{Duration, Instant},
+        time::Instant,
     },
-    tokio::{signal, time::sleep},
+    tokio::signal,
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, info_span, trace, warn},
 };
@@ -233,7 +232,7 @@ async fn handle_connection(
                         }
                         let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
                             debug!("Stream failed");
-                            stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
+                            stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
                             break; // not sure if the right thing to do
                         };
                         let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
@@ -244,6 +243,7 @@ async fn handle_connection(
                         }
                         if res.unwrap() {
                             trace!("Finished stream.");
+                            stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
                             break;
                         }
 

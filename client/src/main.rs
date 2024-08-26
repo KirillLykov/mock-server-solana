@@ -12,7 +12,6 @@ use {
         },
         transaction_generator::generate_dummy_data,
     },
-    futures::future::join_all,
     solana_sdk::{signature::Keypair, signer::EncodableKey},
     std::{sync::Arc, time::Instant},
     tracing::{debug, info},
@@ -56,19 +55,21 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
     let connection = endpoint.connect(parameters.target, "connect")?.await?;
     info!("connected at {:?}", start.elapsed());
 
-    let num_tx_batches = 8;
-    let num_streams_per_connection = 256;
-    for _ in 0..num_tx_batches {
-        let transactions = generate_dummy_data(num_streams_per_connection, false);
+    let num_txs = 1024;
+    for _ in 0..num_txs {
+        let data = generate_dummy_data(false);
         // using join_all will run concurrently but not in parallel.
-        let futures = transactions.into_iter().map(|data| {
+        // it was like below but it is wrong due to fragmentation
+        /*let futures = transactions.into_iter().map(|data| {
             let conn = connection.clone();
             async move { send_data_over_stream(&conn, &data).await }
         });
         let results = join_all(futures).await;
         for result in results {
             debug!("{:?}", result);
-        }
+        }*/
+        let result = send_data_over_stream(&connection, &data).await;
+        debug!("{:?}", result);
     }
 
     let connection_stats = connection.stats();
