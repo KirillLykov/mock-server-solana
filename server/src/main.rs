@@ -8,8 +8,8 @@ use {
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
-        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT,
-        QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS, TIME_TO_HANDLE_ONE_TX,
+        QuicServerError, SkipClientVerification, QUIC_MAX_STAKED_CONCURRENT_STREAMS,
+        QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
     },
     //solana_logger,
     solana_sdk::{
@@ -54,20 +54,27 @@ fn create_server_config(
     server_tls_config.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
 
     let mut server_config = ServerConfig::with_crypto(Arc::new(server_tls_config));
-    // Looks like it was removed from quinn
-    //server_config.use_retry(true);
+    // quinn doesn't have this parameter anylonger
+    //server_config.concurrent_connections(2500); // MAX_STAKED_CONNECTIONS + MAX_UNSTAKED_CONNECTIONS
+    //                                            // Looks like it was removed from quinn
+    //                                            //server_config.use_retry(true);
     let config = Arc::get_mut(&mut server_config.transport).unwrap();
 
+    // Originally, in agave it is set to 256 (see below) but later depending on the stake it is
+    // reset to value up to QUIC_MAX_STAKED_CONCURRENT_STREAMS (512)
     // QUIC_MAX_CONCURRENT_STREAMS doubled, which was found to improve reliability
-    const MAX_CONCURRENT_UNI_STREAMS: u32 =
-        (QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS.saturating_mul(2)) as u32;
-    config.max_concurrent_uni_streams(MAX_CONCURRENT_UNI_STREAMS.into());
+    //const MAX_CONCURRENT_UNI_STREAMS: u32 =
+    //    (QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS.saturating_mul(2)) as u32;
+    config.max_concurrent_uni_streams((QUIC_MAX_STAKED_CONCURRENT_STREAMS as u32).into());
     config.stream_receive_window((PACKET_DATA_SIZE as u32).into());
-    config.receive_window(
-        (PACKET_DATA_SIZE as u32)
-            .saturating_mul(MAX_CONCURRENT_UNI_STREAMS)
-            .into(),
-    );
+    // was:
+    //config.receive_window(
+    //    (PACKET_DATA_SIZE as u32)
+    //        .saturating_mul(MAX_CONCURRENT_UNI_STREAMS)
+    //        .into(),
+    //);
+    // now: (see compute_recieve_window)
+    config.receive_window((PACKET_DATA_SIZE as u32).saturating_mul(10).into());
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
     config.max_idle_timeout(Some(timeout));
 
@@ -204,7 +211,7 @@ async fn handle_connection(
         // Each stream initiated by the client constitutes a new request.
         loop {
             if token.is_cancelled() {
-                warn!("JJJJJJ");
+                info!("Stop handling connection...");
                 return Ok(());
             }
             let stream = connection.accept_uni().await;
@@ -223,13 +230,8 @@ async fn handle_connection(
             let mut packet_accum: Option<PacketAccumulator> = None;
             let stats = stats.clone();
             tokio::spawn({
-                let token = token.clone();
                 async move {
                     loop {
-                        if token.is_cancelled() {
-                            warn!("@@@");
-                            break;
-                        }
                         let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
                             debug!("Stream failed");
                             stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
