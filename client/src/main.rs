@@ -64,7 +64,7 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
             }
         }
 
-        let data = generate_dummy_data(false);
+        let data = generate_dummy_data(parameters.tx_size);
         // using join_all will run concurrently but not in parallel.
         // it was like below but it is wrong due to fragmentation
         /*let futures = transactions.into_iter().map(|data| {

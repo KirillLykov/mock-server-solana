@@ -28,6 +28,9 @@ pub struct ClientCliParameters {
         help = "If specified, limits the benchmark execution to the specified duration."
     )]
     pub duration: Option<Duration>,
+
+    #[clap(long, help = "Size of transaction in bytes.", default_value = "200")]
+    pub tx_size: usize,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, &'static str> {

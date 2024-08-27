@@ -8,8 +8,7 @@ use {
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
-        QuicServerError, SkipClientVerification, QUIC_MAX_STAKED_CONCURRENT_STREAMS,
-        QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
+        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
     },
     //solana_logger,
     solana_sdk::{
@@ -179,8 +178,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                 let Some(conn) = conn else {
                     continue;
                 };
-                if options
-                    .connection_limit
+                if connection_limit
                     .map_or(false, |n| endpoint.open_connections() >= n)
                 {
                     warn!("refusing due to open connection limit");
@@ -188,7 +186,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                         .num_refused_connections
                         .fetch_add(1, Ordering::Relaxed);
                     conn.refuse();
-                } else if options.stateless_retry && !conn.remote_address_validated() {
+                } else if stateless_retry && !conn.remote_address_validated() {
                     warn!("requiring connection to validate its address");
                     conn.retry().unwrap(); // TODO(klykov): what does it mean?
                 } else {
