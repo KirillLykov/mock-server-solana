@@ -25,7 +25,7 @@ pub struct ClientCliParameters {
     #[clap(
         long,
         value_parser = parse_duration,
-        help = "If specified, limits the benchmark execution to the specified duration."
+        help = "If specified, limits the benchmark execution to the specified duration in seconds."
     )]
     pub duration: Option<Duration>,
 

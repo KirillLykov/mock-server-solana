@@ -4,18 +4,18 @@ The `server` and `client` demonstrate how agave client/server works with quic-ba
 
 1. Server (`server.rs`)
 
-Open up a terminal and execute:
+To model current server with relevant parameters:
 
-```text
-$ cargo run --bin server
+```shell
+$ RUST_LOG=info ./server --listen 0.0.0.0:8009 --receive-window-size 630784  --max_concurrent_streams 512 --stream-receive-window-size 1232
 ```
 
 2. Client (`client.rs`)
 
 In a new terminal execute:
 
-```test
-$ cargo run --bin client localhost:4433
+```shell
+$ ./client --target 147.28.173.89:8009 --duration 600
 ```
 
 
@@ -23,9 +23,8 @@ Note that we don't use blockhash. This would require usage of RPC client.
 
 ## Questions
 
-1. There is stream priority, why don't we use it for staking?
-2. There is a Controller trait which defines Congestion Control. What is the default implementation? Why don't we use it for stake?
-3. RW size and number of streams per connection are static by default? Or controlled by this Controller? 
+1. There is a Controller trait which defines Congestion Control. What is the default implementation? Why don't we use it for stake?
+2. RW size and number of streams per connection are static by default? Or might be controlled by this Controller?
 
 ## What to change in the original client
 
