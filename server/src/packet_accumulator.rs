@@ -1,5 +1,5 @@
 //! Copy pasted from agave nonblocking/quic.rs
-use {bytes::Bytes, solana_sdk::packet::Meta, std::time::Instant};
+use {bytes::Bytes, smallvec::SmallVec, solana_sdk::packet::Meta, std::time::Instant};
 // A sequence of bytes that is part of a packet
 // along with where in the packet it is
 pub struct PacketChunk {
@@ -21,6 +21,6 @@ pub struct PacketChunk {
 // the Packet and then when copying the Packet into a PacketBatch)
 pub struct PacketAccumulator {
     pub meta: Meta,
-    pub chunks: Vec<PacketChunk>,
+    pub chunks: SmallVec<[PacketChunk; 2]>,
     pub start_time: Instant,
 }

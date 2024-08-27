@@ -10,7 +10,7 @@ use {
         packet_accumulator::{PacketAccumulator, PacketChunk},
         QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
     },
-    //solana_logger,
+    smallvec::SmallVec,
     solana_sdk::{
         packet::{Meta, PACKET_DATA_SIZE},
         signature::Keypair,
@@ -311,7 +311,7 @@ async fn handle_stream_chunk_accumulation(
         //meta.set_socket_addr(remote_addr); don't care much in the context of this app
         *packet_accum = Some(PacketAccumulator {
             meta,
-            chunks: Vec::new(),
+            chunks: SmallVec::new(),
             start_time: Instant::now(),
         });
     }

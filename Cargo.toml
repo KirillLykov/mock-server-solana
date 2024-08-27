@@ -53,3 +53,4 @@ bincode = { version = "*" }
 serde_json = { version = "*" }
 log = { version = "*" }
 pem = { version = "*" }
+smallvec = "1.13.2"
