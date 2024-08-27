@@ -16,7 +16,7 @@ use {
     solana_sdk::{signature::Keypair, signer::EncodableKey},
     std::{sync::Arc, time::Instant},
     tokio::task::JoinSet,
-    tracing::{debug, info},
+    tracing::{debug, error, info},
 };
 
 fn main() {
