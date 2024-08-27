@@ -3,14 +3,14 @@ use {
     std::{net::SocketAddr, path::PathBuf, time::Duration},
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(name = crate_name!(),
     version = crate_version!(),
     about = crate_description!(),
     rename_all = "kebab-case"
 )]
 pub struct ClientCliParameters {
-    #[clap(long, help = "target")]
+    #[clap(long, help = "Target IP:PORT", default_value = "127.0.0.1:4433")]
     pub target: SocketAddr,
 
     // Cannot use value_parser to read keypair file because Keypair is not Clone.
@@ -31,6 +31,13 @@ pub struct ClientCliParameters {
 
     #[clap(long, help = "Size of transaction in bytes.", default_value = "200")]
     pub tx_size: usize,
+
+    #[clap(
+        long,
+        help = "Number of concurrent connections each in it's own tokio task",
+        default_value = "1"
+    )]
+    pub num_connections: usize,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, &'static str> {

@@ -12,8 +12,10 @@ use {
         },
         transaction_generator::generate_dummy_data,
     },
+    quinn::ClientConfig,
     solana_sdk::{signature::Keypair, signer::EncodableKey},
     std::{sync::Arc, time::Instant},
+    tokio::task::JoinSet,
     tracing::{debug, info},
 };
 
@@ -38,53 +40,76 @@ fn main() {
 
 #[tokio::main]
 async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
-    let client_certificate = if let Some(staked_identity_file) = parameters.staked_identity_file {
-        let staked_identity = Keypair::read_from_file(staked_identity_file)
-            .map_err(|_err| QuicClientError::KeypairReadFailure)?;
-        Arc::new(QuicClientCertificate::new(&staked_identity))
-    } else {
-        Arc::new(QuicClientCertificate::default())
-    };
+    let client_certificate =
+        if let Some(staked_identity_file) = parameters.staked_identity_file.clone() {
+            let staked_identity = Keypair::read_from_file(staked_identity_file)
+                .map_err(|_err| QuicClientError::KeypairReadFailure)?;
+            Arc::new(QuicClientCertificate::new(&staked_identity))
+        } else {
+            Arc::new(QuicClientCertificate::default())
+        };
     let client_config = create_client_config(client_certificate);
-    let endpoint = create_client_endpoint(parameters.bind, client_config)
-        .expect("Endpoint creation should not fail.");
+
+    let mut tasks = JoinSet::new();
+
+    for task_id in 0..parameters.num_connections {
+        tasks.spawn(run_endpoint(
+            client_config.clone(),
+            parameters.clone(),
+            task_id,
+        ));
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(_) => info!("Task completed successfully"),
+            Err(e) => error!("Task failed: {:?}", e),
+        }
+    }
+
+    Ok(())
+}
+
+// quinn has one global per-endpoint lock, so multiple endpoints help get around that
+async fn run_endpoint(
+    client_config: ClientConfig,
+    ClientCliParameters {
+        target,
+        bind,
+        duration,
+        tx_size,
+        ..
+    }: ClientCliParameters,
+    task_id: usize,
+) -> Result<(), QuicClientError> {
+    let endpoint =
+        create_client_endpoint(bind, client_config).expect("Endpoint creation should not fail.");
 
     let start = Instant::now();
 
-    info!("connecting to {}", parameters.target);
-    let connection = endpoint.connect(parameters.target, "connect")?.await?;
-    info!("connected at {:?}", start.elapsed());
+    info!("connecting task `{task_id}` to {target}");
+    let connection = endpoint.connect(target, "connect")?.await?;
+    info!("connected task `{task_id}` at {:?}", start.elapsed());
 
     let start = Instant::now();
     loop {
-        if let Some(duration) = parameters.duration {
+        if let Some(duration) = duration {
             if start.elapsed() >= duration {
-                info!("Transaction generator is stopping...");
+                info!("Transaction generator for task `{task_id}` is stopping...");
                 break;
             }
         }
 
-        let data = generate_dummy_data(parameters.tx_size);
-        // using join_all will run concurrently but not in parallel.
-        // it was like below but it is wrong due to fragmentation
-        /*let futures = transactions.into_iter().map(|data| {
-            let conn = connection.clone();
-            async move { send_data_over_stream(&conn, &data).await }
-        });
-        let results = join_all(futures).await;
-        for result in results {
-            debug!("{:?}", result);
-        }*/
+        let data = generate_dummy_data(tx_size);
         let result = send_data_over_stream(&connection, &data).await;
         debug!("{:?}", result);
     }
 
     let connection_stats = connection.stats();
-    info!("Connection stats: {:?}", connection_stats);
+    info!("Connection stats for task `{task_id}`: {connection_stats:?}");
     connection.close(0u32.into(), b"done");
 
     // Give the server a fair chance to receive the close packet
     endpoint.wait_idle().await;
-
     Ok(())
 }
