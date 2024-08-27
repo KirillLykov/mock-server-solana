@@ -15,7 +15,7 @@ $ RUST_LOG=info ./server --listen 0.0.0.0:8009 --receive-window-size 630784  --m
 In a new terminal execute:
 
 ```shell
-$ ./client --target 147.28.173.89:8009 --duration 600
+$ ./client --target <IP>:8009 --duration 600 --num-connections 4
 ```
 
 
