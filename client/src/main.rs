@@ -55,8 +55,15 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
     let connection = endpoint.connect(parameters.target, "connect")?.await?;
     info!("connected at {:?}", start.elapsed());
 
-    let num_txs = 1024;
-    for _ in 0..num_txs {
+    let start = Instant::now();
+    loop {
+        if let Some(duration) = parameters.duration {
+            if start.elapsed() >= duration {
+                info!("Transaction generator is stopping...");
+                break;
+            }
+        }
+
         let data = generate_dummy_data(false);
         // using join_all will run concurrently but not in parallel.
         // it was like below but it is wrong due to fragmentation

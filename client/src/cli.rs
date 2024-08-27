@@ -1,6 +1,6 @@
 use {
     clap::{crate_description, crate_name, crate_version, Parser},
-    std::{net::SocketAddr, path::PathBuf},
+    std::{net::SocketAddr, path::PathBuf, time::Duration},
 };
 
 #[derive(Parser, Debug)]
@@ -21,6 +21,19 @@ pub struct ClientCliParameters {
     /// OS will choose the port.
     #[clap(long, help = "bind", default_value = "0.0.0.0:0")]
     pub bind: SocketAddr,
+
+    #[clap(
+        long,
+        value_parser = parse_duration,
+        help = "If specified, limits the benchmark execution to the specified duration."
+    )]
+    pub duration: Option<Duration>,
+}
+
+fn parse_duration(s: &str) -> Result<Duration, &'static str> {
+    s.parse::<u64>()
+        .map(Duration::from_secs)
+        .map_err(|_| "failed to parse duration")
 }
 
 pub fn build_cli_parameters() -> ClientCliParameters {
