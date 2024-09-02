@@ -8,7 +8,7 @@ use {
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
-        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
+        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT,
     },
     smallvec::SmallVec,
     solana_sdk::{
@@ -132,6 +132,7 @@ struct Stats {
     num_refused_connections: AtomicU64,
     num_connection_errors: AtomicU64,
     num_finished_streams: AtomicU64,
+    num_received_bytes: AtomicU64,
 }
 
 #[tokio::main]
@@ -252,7 +253,9 @@ async fn handle_connection(
                             stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
                             break; // not sure if the right thing to do
                         };
-                        let res = handle_stream_chunk_accumulation(chunk, &mut packet_accum).await;
+                        let res =
+                            handle_stream_chunk_accumulation(chunk, &mut packet_accum, &stats)
+                                .await;
                         if let Err(e) = res {
                             error!("failed: {reason}", reason = e.to_string());
                             stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
@@ -278,11 +281,12 @@ async fn handle_connection(
 async fn handle_stream_chunk_accumulation(
     chunk: Option<Chunk>,
     packet_accum: &mut Option<PacketAccumulator>,
+    stats: &Arc<Stats>,
 ) -> Result<bool, QuicServerError> {
     let Some(chunk) = chunk else {
         //it means that the last chunk has been received, we put all the chunks accumulated to some channel
         if let Some(accum) = packet_accum.take() {
-            handle_packet_bytes(accum).await;
+            handle_packet_bytes(accum, &stats).await;
         }
         return Ok(true);
     };
@@ -332,10 +336,13 @@ async fn handle_stream_chunk_accumulation(
     Ok(false)
 }
 
-async fn handle_packet_bytes(accum: PacketAccumulator) {
+async fn handle_packet_bytes(accum: PacketAccumulator, stats: &Arc<Stats>) {
     debug!(
         "Received data size {}",
         accum.chunks.len() * PACKET_DATA_SIZE
     );
-    tokio::time::sleep(TIME_TO_HANDLE_ONE_TX).await;
+    stats.num_received_bytes.fetch_add(
+        (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
+        Ordering::Relaxed,
+    );
 }

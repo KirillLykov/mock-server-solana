@@ -11,8 +11,6 @@ use {
     },
     thiserror::Error,
 };
-// this is local constant
-pub const TIME_TO_HANDLE_ONE_TX: Duration = Duration::from_millis(10);
 
 // Empirically found max number of concurrent streams
 // that seems to maximize TPS on GCE (higher values don't seem to
