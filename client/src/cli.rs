@@ -29,7 +29,7 @@ pub struct ClientCliParameters {
     )]
     pub duration: Option<Duration>,
 
-    #[clap(long, help = "Size of transaction in bytes.", default_value = "200")]
+    #[clap(long, help = "Size of transaction in bytes.", default_value = "251")]
     pub tx_size: usize,
 
     #[clap(
