@@ -6,13 +6,14 @@ use {
     client::{
         cli::{build_cli_parameters, ClientCliParameters},
         error::QuicClientError,
-        quic_networking::{
-            create_client_config, create_client_endpoint, send_data_over_stream,
-            QuicClientCertificate,
-        },
+        quic_networking::{create_client_config, create_client_endpoint, send_data_over_stream},
         transaction_generator::generate_dummy_data,
     },
     quinn::ClientConfig,
+    rustls::{
+        crypto::CryptoProvider,
+        pki_types::{CertificateDer, ServerName, UnixTime},
+    },
     solana_sdk::{signature::Keypair, signer::EncodableKey},
     std::{sync::Arc, time::Instant},
     tokio::task::JoinSet,
@@ -20,12 +21,9 @@ use {
 };
 
 fn main() {
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .finish(),
-    )
-    .unwrap();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("default provider already set elsewhere");
     let opt = build_cli_parameters();
     let code = {
         if let Err(e) = run(opt) {
@@ -40,15 +38,13 @@ fn main() {
 
 #[tokio::main]
 async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
-    let client_certificate =
-        if let Some(staked_identity_file) = parameters.staked_identity_file.clone() {
-            let staked_identity = Keypair::read_from_file(staked_identity_file)
-                .map_err(|_err| QuicClientError::KeypairReadFailure)?;
-            Arc::new(QuicClientCertificate::new(&staked_identity))
-        } else {
-            Arc::new(QuicClientCertificate::default())
-        };
-    let client_config = create_client_config(client_certificate);
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .finish(),
+    )
+    .unwrap();
+    let client_config = create_client_config();
 
     let mut tasks = JoinSet::new();
 
@@ -90,21 +86,25 @@ async fn run_endpoint(
     info!("connecting task `{task_id}` to {target}");
     let connection = endpoint.connect(target, "connect")?.await?;
     info!("connected task `{task_id}` at {:?}", start.elapsed());
+    let data = generate_dummy_data(tx_size);
 
     let start = Instant::now();
-    loop {
-        if let Some(duration) = duration {
-            if start.elapsed() >= duration {
-                info!("Transaction generator for task `{task_id}` is stopping...");
-                break;
+    info!("STARTING LOOP");
+    'out: loop {
+        for i in 0..=6 {
+            if let Some(duration) = duration {
+                if start.elapsed() >= duration {
+                    info!("Transaction generator for task `{task_id}` is stopping...");
+                    break 'out;
+                }
             }
+
+            let data = data.clone();
+            let result = send_data_over_stream(&connection, &data).await;
+            debug!("{:?}", result);
         }
-
-        let data = generate_dummy_data(tx_size);
-        let result = send_data_over_stream(&connection, &data).await;
-        debug!("{:?}", result);
+        tokio::task::yield_now().await;
     }
-
     let connection_stats = connection.stats();
     info!("Connection stats for task `{task_id}`: {connection_stats:?}");
     connection.close(0u32.into(), b"done");
