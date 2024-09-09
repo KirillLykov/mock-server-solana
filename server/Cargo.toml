@@ -18,7 +18,7 @@ quinn-proto = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rcgen = { workspace = true }
-rustls = { workspace = true, features = ["dangerous_configuration"] }
+rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }

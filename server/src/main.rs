@@ -4,11 +4,18 @@
 
 use {
     pem::Pem,
-    quinn::{Chunk, Endpoint, IdleTimeout, ServerConfig},
+    quinn::{
+        congestion, crypto::rustls::QuicServerConfig, AckFrequencyConfig, Chunk, Connecting,
+        Endpoint, IdleTimeout, Incoming, ServerConfig, VarInt,
+    },
+    rustls::{
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+        KeyLogFile,
+    },
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
-        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
+        QuicServerError, QUIC_MAX_TIMEOUT, TIME_TO_HANDLE_ONE_TX,
     },
     smallvec::SmallVec,
     solana_sdk::{
@@ -39,23 +46,38 @@ fn create_server_config(
     max_concurrent_streams: u32,
     stream_receive_window_size: u32,
     receive_window_size: u32,
-) -> Result<(ServerConfig, String), QuicServerError> {
-    let gossip_host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let (cert, priv_key) = new_self_signed_tls_certificate(identity_keypair, gossip_host)
-        .expect("Should be able to create certificate.");
-    let cert_chain_pem_parts = vec![Pem {
-        tag: "CERTIFICATE".to_string(),
-        contents: cert.0.clone(),
-    }];
-    let cert_chain_pem = pem::encode_many(&cert_chain_pem_parts);
+) -> Result<ServerConfig, QuicServerError> {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = CertificateDer::from(cert.serialize_der().unwrap());
+    let priv_key = PrivatePkcs8KeyDer::from(cert.serialize_private_key_der());
 
-    let mut server_tls_config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_client_cert_verifier(SkipClientVerification::new())
-        .with_single_cert(vec![cert], priv_key)?;
-    server_tls_config.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
+    let mut crypto = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .unwrap() // The *ring* default provider supports TLS 1.3
+    .with_no_client_auth()
+    .with_single_cert(vec![cert_der.clone()], priv_key.into())?;
+    crypto.max_early_data_size = u32::MAX;
+    crypto.key_log = Arc::new(KeyLogFile::new());
 
-    let mut server_config = ServerConfig::with_crypto(Arc::new(server_tls_config));
+    let lol = rustls::crypto::ring::default_provider()
+        .cipher_suites
+        .iter()
+        .find_map(|cs| match (cs.suite(), cs.tls13()) {
+            (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
+                Some(suite.quic_suite())
+            }
+            _ => None,
+        })
+        .flatten()
+        .unwrap();
+
+    let mut server_config =
+        // ServerConfig::with_crypto(QuicServerConfig::try_from(Arc::new(crypto)).unwrap());
+        ServerConfig::with_crypto(Arc::new(QuicServerConfig::with_initial(
+            Arc::new(crypto), lol,
+        ).unwrap()));
     // quinn doesn't have this parameter anylonger
     //server_config.concurrent_connections(2500); // MAX_STAKED_CONNECTIONS + MAX_UNSTAKED_CONNECTIONS
     //                                            // Looks like it was removed from quinn
@@ -84,8 +106,18 @@ fn create_server_config(
     const MAX_CONCURRENT_BIDI_STREAMS: u32 = 0;
     config.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
     config.datagram_receive_buffer_size(None);
+    config.packet_threshold(u32::MAX);
+    config.time_threshold(500f32);
+    config.send_window(1024 * 1024 * 50);
+    let mut ack = AckFrequencyConfig::default();
+    ack.ack_eliciting_threshold(VarInt::from_u32(200));
+    ack.reordering_threshold(VarInt::from_u32(199));
+    // config.ack_frequency_config(Some(ack));
 
-    Ok((server_config, cert_chain_pem))
+    config.enable_segmentation_offload(false);
+    config.congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
+
+    Ok((server_config))
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -106,15 +138,24 @@ fn create_server_endpoint(
 
 fn main() {
     //solana_logger::setup();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("default provider already set elsewhere");
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(tracing::Level::TRACE) // Ensure it handles up to TRACE level
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .finish(),
     )
     .unwrap();
     let parameters = build_cli_parameters();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_io() // needed by BpfLogger
+        .enable_time()
+        .build()
+        .unwrap();
     let code = {
-        if let Err(e) = run(parameters) {
+        if let Err(e) = rt.block_on(async { run(parameters).await }) {
             eprintln!("ERROR: {e}");
             1
         } else {
@@ -134,7 +175,6 @@ struct Stats {
     num_finished_streams: AtomicU64,
 }
 
-#[tokio::main]
 async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let token = CancellationToken::new();
     let stats = Arc::new(Stats::default());
@@ -159,7 +199,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     } = options;
 
     let identity = Keypair::new();
-    let (server_config, _) = create_server_config(
+    let (server_config) = create_server_config(
         &identity,
         max_concurrent_streams,
         stream_receive_window_size,
@@ -178,29 +218,30 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                 let Some(conn) = conn else {
                     continue;
                 };
-                if connection_limit
-                    .map_or(false, |n| endpoint.open_connections() >= n)
-                {
-                    warn!("refusing due to open connection limit");
-                    stats
-                        .num_refused_connections
-                        .fetch_add(1, Ordering::Relaxed);
-                    conn.refuse();
-                } else if stateless_retry && !conn.remote_address_validated() {
-                    warn!("requiring connection to validate its address");
-                    conn.retry().unwrap(); // TODO(klykov): what does it mean?
-                } else {
-                    info!("accepting connection");
+                // if connection_limit
+                //     .map_or(false, |n| endpoint.open_connections() >= n)
+                // {
+                //     warn!("refusing due to open connection limit");
+                //     stats
+                //         .num_refused_connections
+                //         .fetch_add(1, Ordering::Relaxed);
+                //     conn.refuse();
+                // } else if stateless_retry && !conn.remote_address_validated() {
+                //     warn!("requiring connection to validate its address");
+                //     conn.retry().unwrap(); // TODO(klykov): what does it mean?
+                // } else {
+                //     info!("accepting connection");
                     stats
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
                     let fut = handle_connection(conn, stats.clone(), token.clone());
                     tokio::spawn(async move {
+                        eprintln!("DOING AWAIT");
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
                         }
                     });
-                }
+                // }
             }
         }
     }
@@ -210,7 +251,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
 }
 
 async fn handle_connection(
-    conn: quinn::Incoming,
+    conn: Incoming,
     stats: Arc<Stats>,
     token: CancellationToken,
 ) -> Result<(), QuicServerError> {
@@ -337,5 +378,5 @@ async fn handle_packet_bytes(accum: PacketAccumulator) {
         "Received data size {}",
         accum.chunks.len() * PACKET_DATA_SIZE
     );
-    tokio::time::sleep(TIME_TO_HANDLE_ONE_TX).await;
+    //    tokio::time::sleep(TIME_TO_HANDLE_ONE_TX).await;
 }

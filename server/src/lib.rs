@@ -3,7 +3,7 @@ pub mod packet_accumulator;
 
 use {
     quinn::ConnectionError,
-    rustls::{server::ClientCertVerified, Certificate, DistinguishedName},
+    rustls::DistinguishedName,
     std::{
         io,
         sync::Arc,
@@ -21,7 +21,7 @@ pub const QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS: usize = 128;
 
 pub const QUIC_MAX_STAKED_CONCURRENT_STREAMS: usize = 512;
 // the same is in the client crate
-pub const QUIC_MAX_TIMEOUT: Duration = Duration::from_secs(2);
+pub const QUIC_MAX_TIMEOUT: Duration = Duration::from_secs(20);
 
 /*#[derive(Error, Debug)]
 pub struct FailedReadChunk;
@@ -44,27 +44,4 @@ pub enum QuicServerError {
     FailedReadChunk,
     #[error(transparent)]
     EndpointError(#[from] io::Error),
-}
-
-pub struct SkipClientVerification;
-
-impl SkipClientVerification {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self)
-    }
-}
-
-impl rustls::server::ClientCertVerifier for SkipClientVerification {
-    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _now: SystemTime,
-    ) -> Result<ClientCertVerified, rustls::Error> {
-        Ok(rustls::server::ClientCertVerified::assertion())
-    }
 }

@@ -23,9 +23,10 @@ tokio = { version = "1.28.1", features = [
     "time",
     "macros",
     "sync",
+    "tracing"
 ] }
 tokio-util = {version = "*"}
-rustls = { version = "0.21.0" }
+rustls = { version = "0.23.12", features = ["ring"] }
 rustls-pemfile = "1.0.0"
 tracing = "0.1.10"
 tracing-subscriber = { version = "0.3.0", default-features = false, features = [
@@ -41,8 +42,8 @@ tracing-futures = { version = "0.2.0", default-features = false, features = [
 rand = "0.8"
 clap = { version = "4", features = ["derive"] }
 url = "2"
-quinn = { git = "https://github.com/quinn-rs/quinn.git" }
-quinn-proto = { git = "https://github.com/quinn-rs/quinn.git" }
+quinn = { path = "../quinn/quinn" }
+quinn-proto = { path = "../quinn/quinn-proto" }
 rcgen = "0.12.0"
 solana-streamer = { version = "1.18.10" }
 solana-sdk = { version = "1.18.10" }
@@ -54,3 +55,9 @@ serde_json = { version = "*" }
 log = { version = "*" }
 pem = { version = "*" }
 smallvec = "1.13.2"
+
+[profile.release]
+debug = 2
+
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/anza-xyz/curve25519-dalek.git", rev = "b500cdc2a920cd5bff9e2dd974d7b97349d61464" }
