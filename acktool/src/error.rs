@@ -1,5 +1,7 @@
+
+#[cfg(feature = "use_quinn_master")]
+use quinn_master::{ConnectError, ConnectionError, WriteError};
 use {
-    quinn::{ConnectError, ConnectionError, WriteError},
     std::io,
     thiserror::Error,
 };

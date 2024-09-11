@@ -16,7 +16,7 @@ tracing-futures = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
 url = { workspace = true }
-quinn = { workspace = true }
+quinn_master = { workspace = true, optional =  true}
 rcgen = { workspace = true }
 solana-streamer = { workspace = true }
 solana-sdk = { workspace = true }
@@ -26,3 +26,7 @@ bincode = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 rand_chacha = { workspace = true }
+
+[features]
+default = ["use_quinn_master"]
+use_quinn_master = ["quinn_master"]

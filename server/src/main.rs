@@ -1,10 +1,11 @@
 //! This example demonstrates quic server for handling incoming transactions.
 //!
 //! Checkout the `README.md` for guidance.
+#[cfg(feature = "use_quinn_master")]
+use quinn_master::{Chunk, ConnectionError, Endpoint, IdleTimeout, Incoming, ServerConfig};
 
 use {
     pem::Pem,
-    quinn::{Chunk, Endpoint, IdleTimeout, ServerConfig},
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
@@ -211,7 +212,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
 }
 
 async fn handle_connection(
-    conn: quinn::Incoming,
+    conn: Incoming,
     stats: Arc<Stats>,
     token: CancellationToken,
 ) -> Result<(), QuicServerError> {
@@ -232,7 +233,7 @@ async fn handle_connection(
             }
             let stream = connection.accept_uni().await;
             let mut stream = match stream {
-                Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                Err(ConnectionError::ApplicationClosed { .. }) => {
                     info!("connection closed");
                     return Ok(());
                 }

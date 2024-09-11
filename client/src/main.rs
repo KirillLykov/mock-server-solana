@@ -2,6 +2,8 @@
 //!
 //! Checkout the `README.md` for guidance.
 
+#[cfg(feature = "use_quinn_master")]
+use quinn_master::ClientConfig;
 use {
     client::{
         cli::{build_cli_parameters, ClientCliParameters},
@@ -12,7 +14,6 @@ use {
         },
         transaction_generator::generate_dummy_data,
     },
-    quinn::ClientConfig,
     solana_sdk::{signature::Keypair, signer::EncodableKey},
     std::{sync::Arc, time::Instant},
     tokio::task::JoinSet,

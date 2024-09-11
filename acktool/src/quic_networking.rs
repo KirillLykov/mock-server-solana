@@ -1,6 +1,8 @@
+#[cfg(feature = "use_quinn_master")]
+use quinn_master::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig};
+
 use {
     crate::error::QuicClientError,
-    quinn::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig},
     solana_sdk::signature::Keypair,
     solana_streamer::{
         nonblocking::quic::ALPN_TPU_PROTOCOL_ID,

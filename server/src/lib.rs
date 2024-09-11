@@ -1,8 +1,10 @@
 pub mod cli;
 pub mod packet_accumulator;
 
+#[cfg(feature = "use_quinn_master")]
+use quinn_master::ConnectionError;
+
 use {
-    quinn::ConnectionError,
     rustls::{server::ClientCertVerified, Certificate, DistinguishedName},
     std::{
         io,
