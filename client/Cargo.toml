@@ -29,6 +29,6 @@ futures = { workspace = true }
 rand_chacha = { workspace = true }
 
 [features]
-default = ["use_quinn_10"]
+default = ["use_quinn_master"]
 use_quinn_master = ["quinn_master"]
 use_quinn_10 = ["quinn_10"]

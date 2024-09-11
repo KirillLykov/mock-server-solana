@@ -1,6 +1,11 @@
 //! This example demonstrates an HTTP client that requests files from a server.
 //!
 //! Checkout the `README.md` for guidance.
+#[cfg(all(feature = "use_quinn_master", feature = "use_quinn_10"))]
+compile_error!(
+    "Features 'use_quinn_master' and 'use_quinn_10' are mutually exclusive.\
+Try `cargo build --no-default-features --features ...` instead."
+);
 
 #[cfg(feature = "use_quinn_10")]
 use quinn_10::ClientConfig;

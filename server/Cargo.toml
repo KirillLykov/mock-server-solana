@@ -34,6 +34,6 @@ tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-default = ["use_quinn_10"]
+default = ["use_quinn_master"]
 use_quinn_10 = ["quinn_10", "quinn-proto_10"]
 use_quinn_master = ["quinn_master", "quinn-proto_master"]
