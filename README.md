@@ -18,8 +18,19 @@ In a new terminal execute:
 $ ./client --target <IP>:8009 --duration 600 --num-connections 4
 ```
 
-
 Note that we don't use blockhash. This would require usage of RPC client.
+
+## Features
+
+Both client and server allows to select quinn version using features.
+To use `quinn 0.10.2` and `quinn-proto 0.10.6` (the same as agave atm), do the following:
+
+```
+cargo build --features "use_quinn_10" --no-default-features
+```
+
+To use quinn master (default), just don't specify any feature.
+
 
 ## Questions
 

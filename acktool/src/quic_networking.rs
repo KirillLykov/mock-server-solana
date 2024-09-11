@@ -1,3 +1,5 @@
+#[cfg(feature = "use_quinn_10")]
+use quinn_10::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig};
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig};
 

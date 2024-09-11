@@ -1,8 +1,21 @@
 //! This example demonstrates quic server for handling incoming transactions.
 //!
 //! Checkout the `README.md` for guidance.
+#[cfg(all(feature = "use_quinn_master", feature = "use_quinn_10"))]
+compile_error!(
+    "Features 'use_quinn_master' and 'use_quinn_10' are mutually exclusive.\
+Try `cargo build --no-default-features --features ...` instead."
+);
+
 #[cfg(feature = "use_quinn_master")]
-use quinn_master::{Chunk, ConnectionError, Endpoint, IdleTimeout, Incoming, ServerConfig};
+use quinn_master::{
+    Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, Incoming, ServerConfig,
+};
+
+#[cfg(feature = "use_quinn_10")]
+use quinn_10::{
+    Chunk, Connecting, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig,
+};
 
 use {
     pem::Pem,
@@ -180,23 +193,28 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                 let Some(conn) = conn else {
                     continue;
                 };
-                if connection_limit
-                    .map_or(false, |n| endpoint.open_connections() >= n)
+                if check_connection_limit(&endpoint, connection_limit)
                 {
                     warn!("refusing due to open connection limit");
                     stats
                         .num_refused_connections
                         .fetch_add(1, Ordering::Relaxed);
-                    conn.refuse();
-                } else if stateless_retry && !conn.remote_address_validated() {
+
+                    #[cfg(feature = "use_quinn_master")]
+                    {conn.refuse();}
+                    // quinn v0.10 doesn't have refuse, so we just drop.
+                } else if stateless_retry && !check_address_validated(&conn) {
+                    #[cfg(feature = "use_quinn_master")]
+                    {
                     warn!("requiring connection to validate its address");
-                    conn.retry().unwrap(); // TODO(klykov): what does it mean?
+                    conn.retry().unwrap();
+                    }
                 } else {
                     info!("accepting connection");
                     stats
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
-                    let fut = handle_connection(conn, stats.clone(), token.clone());
+                    let fut = handle_incoming(conn, stats.clone(), token.clone());
                     tokio::spawn(async move {
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
@@ -211,12 +229,54 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     Ok(())
 }
 
-async fn handle_connection(
+#[cfg(feature = "use_quinn_master")]
+fn check_address_validated(conn: &Incoming) -> bool {
+    conn.remote_address_validated()
+}
+
+#[cfg(feature = "use_quinn_10")]
+fn check_address_validated(_conn: &Connecting) -> bool {
+    true
+}
+
+#[allow(unused_variables)]
+fn check_connection_limit(endpoint: &Endpoint, connection_limit: Option<usize>) -> bool {
+    // there is no Endpoint::open_connections before quinn 0.11
+    #[cfg(feature = "use_quinn_master")]
+    {
+        connection_limit.map_or(false, |n| endpoint.open_connections() >= n)
+    }
+    #[cfg(feature = "use_quinn_10")]
+    {
+        false
+    }
+}
+
+#[cfg(feature = "use_quinn_10")]
+async fn handle_incoming(
+    conn: Connecting,
+    stats: Arc<Stats>,
+    token: CancellationToken,
+) -> Result<(), QuicServerError> {
+    let connection = conn.await?;
+    handle_connection(connection, stats, token).await
+}
+
+#[cfg(feature = "use_quinn_master")]
+async fn handle_incoming(
     conn: Incoming,
     stats: Arc<Stats>,
     token: CancellationToken,
 ) -> Result<(), QuicServerError> {
     let connection = conn.await?;
+    handle_connection(connection, stats, token).await
+}
+
+async fn handle_connection(
+    connection: Connection,
+    stats: Arc<Stats>,
+    token: CancellationToken,
+) -> Result<(), QuicServerError> {
     async {
         let span = info_span!(
             "connection",

@@ -43,6 +43,9 @@ clap = { version = "4", features = ["derive"] }
 url = "2"
 quinn_master = { package = "quinn", git = "https://github.com/quinn-rs/quinn.git" }
 quinn-proto_master = { package = "quinn-proto", git = "https://github.com/quinn-rs/quinn.git" }
+# versions from the agave
+quinn_10 = { package = "quinn", version = "0.10.2"}
+quinn-proto_10 = { package = "quinn-proto", version = "0.10.6"}
 rcgen = "0.12.0"
 solana-streamer = { version = "1.18.10" }
 solana-sdk = { version = "1.18.10" }

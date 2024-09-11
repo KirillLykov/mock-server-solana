@@ -15,6 +15,8 @@ log = { workspace = true }
 pem = { workspace = true }
 quinn_master = { workspace = true,optional = true }
 quinn-proto_master = { workspace = true,optional = true }
+quinn_10 = { workspace = true, optional = true}
+quinn-proto_10 = { workspace = true, optional = true}
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rcgen = { workspace = true }
@@ -32,5 +34,6 @@ tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-default = ["use_quinn_master"]
+default = ["use_quinn_10"]
+use_quinn_10 = ["quinn_10", "quinn-proto_10"]
 use_quinn_master = ["quinn_master", "quinn-proto_master"]

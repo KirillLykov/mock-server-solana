@@ -1,6 +1,8 @@
 pub mod cli;
 pub mod packet_accumulator;
 
+#[cfg(feature = "use_quinn_10")]
+use quinn_10::ConnectionError;
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::ConnectionError;
 

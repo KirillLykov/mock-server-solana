@@ -17,6 +17,7 @@ rand = { workspace = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
 url = { workspace = true }
 quinn_master = { workspace = true, optional =  true}
+quinn_10 = { workspace = true, optional =  true}
 rcgen = { workspace = true }
 solana-streamer = { workspace = true }
 solana-sdk = { workspace = true }
@@ -30,3 +31,4 @@ rand_chacha = { workspace = true }
 [features]
 default = ["use_quinn_master"]
 use_quinn_master = ["quinn_master"]
+use_quinn_10 = ["quinn_10"]

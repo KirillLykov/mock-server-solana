@@ -2,6 +2,8 @@
 //!
 //! Checkout the `README.md` for guidance.
 
+#[cfg(feature = "use_quinn_10")]
+use quinn_10::ClientConfig;
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::ClientConfig;
 use {

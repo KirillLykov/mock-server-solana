@@ -1,9 +1,9 @@
+#[cfg(feature = "use_quinn_10")]
+use quinn_10::{ConnectError, ConnectionError, WriteError};
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::{ConnectError, ConnectionError, WriteError};
-use {
-    std::io,
-    thiserror::Error,
-};
+
+use {std::io, thiserror::Error};
 
 // called QuicError in agave
 #[derive(Error, Debug)]
