@@ -1,9 +1,9 @@
 //! This example demonstrates quic server for handling incoming transactions.
 //!
 //! Checkout the `README.md` for guidance.
-#[cfg(all(feature = "use_quinn_master", feature = "use_quinn_10"))]
+#[cfg(all(feature = "use_quinn_master", feature = "use_quinn_11"))]
 compile_error!(
-    "Features 'use_quinn_master' and 'use_quinn_10' are mutually exclusive.\
+    "Features 'use_quinn_master' and 'use_quinn_11' are mutually exclusive.\
 Try `cargo build --no-default-features --features ...` instead."
 );
 
@@ -12,9 +12,10 @@ use quinn_master::{
     Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, Incoming, ServerConfig,
 };
 
-#[cfg(feature = "use_quinn_10")]
-use quinn_10::{
-    Chunk, Connecting, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig,
+#[cfg(feature = "use_quinn_11")]
+use {
+    quinn_11::{Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig},
+    quinn_proto_11::crypto::rustls::QuicServerConfig,
 };
 
 use {
@@ -22,18 +23,20 @@ use {
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         packet_accumulator::{PacketAccumulator, PacketChunk},
-        QuicServerError, SkipClientVerification, QUIC_MAX_TIMEOUT,
+        // This is the new certificate used in v2
+        tls_certificates::new_dummy_x509_certificate,
+        QuicServerError,
+        SkipClientVerification,
+        QUIC_MAX_TIMEOUT,
     },
     smallvec::SmallVec,
     solana_sdk::{
         packet::{Meta, PACKET_DATA_SIZE},
         signature::Keypair,
     },
-    solana_streamer::{
-        nonblocking::quic::ALPN_TPU_PROTOCOL_ID, tls_certificates::new_self_signed_tls_certificate,
-    },
+    solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
     std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::SocketAddr,
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
@@ -47,33 +50,26 @@ use {
 
 /// Returns default server configuration along with its PEM certificate chain.
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-                                              // called configure_server in agave
-fn create_server_config(
+fn configure_server(
     identity_keypair: &Keypair,
     max_concurrent_streams: u32,
     stream_receive_window_size: u32,
     receive_window_size: u32,
 ) -> Result<(ServerConfig, String), QuicServerError> {
-    let gossip_host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let (cert, priv_key) = new_self_signed_tls_certificate(identity_keypair, gossip_host)
-        .expect("Should be able to create certificate.");
+    let (cert, priv_key) = new_dummy_x509_certificate(identity_keypair);
     let cert_chain_pem_parts = vec![Pem {
         tag: "CERTIFICATE".to_string(),
-        contents: cert.0.clone(),
+        contents: cert.as_ref().to_vec(),
     }];
     let cert_chain_pem = pem::encode_many(&cert_chain_pem_parts);
 
     let mut server_tls_config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_client_cert_verifier(SkipClientVerification::new())
         .with_single_cert(vec![cert], priv_key)?;
     server_tls_config.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
+    let quic_server_config = QuicServerConfig::try_from(server_tls_config)?;
 
-    let mut server_config = ServerConfig::with_crypto(Arc::new(server_tls_config));
-    // quinn doesn't have this parameter anylonger
-    //server_config.concurrent_connections(2500); // MAX_STAKED_CONNECTIONS + MAX_UNSTAKED_CONNECTIONS
-    //                                            // Looks like it was removed from quinn
-    //                                            //server_config.use_retry(true);
+    let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
     let config = Arc::get_mut(&mut server_config.transport).unwrap();
 
     // Originally, in agave it is set to 256 (see below) but later depending on the stake it is
@@ -83,13 +79,7 @@ fn create_server_config(
     //    (QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS.saturating_mul(2)) as u32;
     config.max_concurrent_uni_streams(max_concurrent_streams.into());
     config.stream_receive_window(stream_receive_window_size.into());
-    // was:
-    //config.receive_window(
-    //    (PACKET_DATA_SIZE as u32)
-    //        .saturating_mul(MAX_CONCURRENT_UNI_STREAMS)
-    //        .into(),
-    //);
-    // now: (see compute_recieve_window)
+    // was: config.receive_window((PACKET_DATA_SIZE as u32).into());
     config.receive_window(receive_window_size.into());
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
     config.max_idle_timeout(Some(timeout));
@@ -98,6 +88,12 @@ fn create_server_config(
     const MAX_CONCURRENT_BIDI_STREAMS: u32 = 0;
     config.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
     config.datagram_receive_buffer_size(None);
+
+    // Disable GSO. The server only accepts inbound unidirectional streams initiated by clients,
+    // which means that reply data never exceeds one MTU. By disabling GSO, we make
+    // quinn_proto::Connection::poll_transmit allocate only 1 MTU vs 10 * MTU for _each_ transmit.
+    // See https://github.com/anza-xyz/agave/pull/1647.
+    config.enable_segmentation_offload(false);
 
     Ok((server_config, cert_chain_pem))
 }
@@ -174,7 +170,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     } = options;
 
     let identity = Keypair::new();
-    let (server_config, _) = create_server_config(
+    let (server_config, _) = configure_server(
         &identity,
         max_concurrent_streams,
         stream_receive_window_size,
@@ -203,18 +199,16 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                     #[cfg(feature = "use_quinn_master")]
                     {conn.refuse();}
                     // quinn v0.10 doesn't have refuse, so we just drop.
-                } else if stateless_retry && !check_address_validated(&conn) {
-                    #[cfg(feature = "use_quinn_master")]
-                    {
+                } else if stateless_retry && !conn.remote_address_validated() {
                     warn!("requiring connection to validate its address");
                     conn.retry().unwrap();
-                    }
                 } else {
                     info!("accepting connection");
                     stats
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
-                    let fut = handle_incoming(conn, stats.clone(), token.clone());
+                    let connection = conn.await?;
+                    let fut = handle_connection(connection, stats.clone(), token.clone());
                     tokio::spawn(async move {
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
@@ -229,47 +223,8 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     Ok(())
 }
 
-#[cfg(feature = "use_quinn_master")]
-fn check_address_validated(conn: &Incoming) -> bool {
-    conn.remote_address_validated()
-}
-
-#[cfg(feature = "use_quinn_10")]
-fn check_address_validated(_conn: &Connecting) -> bool {
-    true
-}
-
-#[allow(unused_variables)]
 fn check_connection_limit(endpoint: &Endpoint, connection_limit: Option<usize>) -> bool {
-    // there is no Endpoint::open_connections before quinn 0.11
-    #[cfg(feature = "use_quinn_master")]
-    {
-        connection_limit.map_or(false, |n| endpoint.open_connections() >= n)
-    }
-    #[cfg(feature = "use_quinn_10")]
-    {
-        false
-    }
-}
-
-#[cfg(feature = "use_quinn_10")]
-async fn handle_incoming(
-    conn: Connecting,
-    stats: Arc<Stats>,
-    token: CancellationToken,
-) -> Result<(), QuicServerError> {
-    let connection = conn.await?;
-    handle_connection(connection, stats, token).await
-}
-
-#[cfg(feature = "use_quinn_master")]
-async fn handle_incoming(
-    conn: Incoming,
-    stats: Arc<Stats>,
-    token: CancellationToken,
-) -> Result<(), QuicServerError> {
-    let connection = conn.await?;
-    handle_connection(connection, stats, token).await
+    connection_limit.map_or(false, |n| endpoint.open_connections() >= n)
 }
 
 async fn handle_connection(
