@@ -1,7 +1,11 @@
-#[cfg(feature = "use_quinn_10")]
-use quinn_10::{ConnectError, ConnectionError, WriteError};
+#[cfg(feature = "use_quinn_11")]
+use quinn_11 as quinn;
+
 #[cfg(feature = "use_quinn_master")]
-use quinn_master::{ConnectError, ConnectionError, WriteError};
+use quinn_master as quinn;
+
+#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
+use quinn::{ConnectError, ConnectionError, WriteError};
 
 use {std::io, thiserror::Error};
 

@@ -7,15 +7,20 @@ compile_error!(
 Try `cargo build --no-default-features --features ...` instead."
 );
 
-#[cfg(feature = "use_quinn_master")]
-use quinn_master::{
-    Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, Incoming, ServerConfig,
-};
-
 #[cfg(feature = "use_quinn_11")]
+use quinn_11 as quinn;
+#[cfg(feature = "use_quinn_11")]
+use quinn_proto_11 as quinn_proto;
+
+#[cfg(feature = "use_quinn_master")]
+use quinn_master as quinn;
+#[cfg(feature = "use_quinn_master")]
+use quinn_proto_master as quinn_proto;
+
+#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
 use {
-    quinn_11::{Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig},
-    quinn_proto_11::crypto::rustls::QuicServerConfig,
+    quinn::{Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig},
+    quinn_proto::crypto::rustls::QuicServerConfig,
 };
 
 use {

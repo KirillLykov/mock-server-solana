@@ -1,53 +1,84 @@
-#[cfg(feature = "use_quinn_10")]
-use quinn_10::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig};
+#[cfg(feature = "use_quinn_11")]
+use quinn_11 as quinn;
 
 #[cfg(feature = "use_quinn_master")]
-use quinn_master::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig};
+use quinn_master as quinn;
+
+#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
+use quinn::{
+    crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, IdleTimeout,
+    TransportConfig,
+};
+use solana_sdk::signature::Keypair;
 
 use {
     crate::error::QuicClientError,
-    solana_sdk::signature::Keypair,
-    solana_streamer::{
-        nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
-        // on master, renamed to tls_certificates::new_dummy_x509_certificate,
-        tls_certificates::new_self_signed_tls_certificate,
-    },
-    std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Arc,
-        time::Duration,
-    },
+    server::tls_certificates::new_dummy_x509_certificate,
+    solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
+    std::{net::SocketAddr, sync::Arc, time::Duration},
 };
 
 const QUIC_MAX_TIMEOUT: Duration = Duration::from_secs(2);
 // TODO(klykov): it think the ratio between these consts should be higher
 const QUIC_KEEP_ALIVE: Duration = Duration::from_secs(1);
 
-// Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
-struct SkipServerVerification;
+#[derive(Debug)]
+pub struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
 
 impl SkipServerVerification {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+        Arc::new(Self(Arc::new(rustls::crypto::ring::default_provider())))
     }
 }
-impl rustls::client::ServerCertVerifier for SkipServerVerification {
+
+impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 }
-// copy-pasted from agave
+
 pub struct QuicClientCertificate {
-    pub certificate: rustls::Certificate,
-    pub key: rustls::PrivateKey,
+    pub certificate: rustls::pki_types::CertificateDer<'static>,
+    pub key: rustls::pki_types::PrivateKeyDer<'static>,
 }
 
 impl Default for QuicClientCertificate {
@@ -56,29 +87,28 @@ impl Default for QuicClientCertificate {
     }
 }
 
+// adapted from `impl Default for QuicLazyInitializedEndpoint`
 impl QuicClientCertificate {
     pub fn new(keypair: &Keypair) -> Self {
-        let (certificate, key) =
-            new_self_signed_tls_certificate(keypair, IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-                .expect("Creating TLS certificate should not fail.");
+        let (certificate, key) = new_dummy_x509_certificate(keypair);
         Self { certificate, key }
     }
 }
 
+// taken from QuicLazyInitializedEndpoint::create_endpoint
 pub fn create_client_config(client_certificate: Arc<QuicClientCertificate>) -> ClientConfig {
-    // taken from QuicLazyInitializedEndpoint::create_endpoint
     let mut crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
+        .dangerous()
         .with_custom_certificate_verifier(SkipServerVerification::new())
         .with_client_auth_cert(
             vec![client_certificate.certificate.clone()],
-            client_certificate.key.clone(),
+            client_certificate.key.clone_key(),
         )
         .expect("Failed to set QUIC client certificates");
     crypto.enable_early_data = true;
     crypto.alpn_protocols = vec![ALPN_TPU_PROTOCOL_ID.to_vec()];
 
-    let mut config = ClientConfig::new(Arc::new(crypto));
+    let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(crypto).unwrap()));
     let mut transport_config = TransportConfig::default();
 
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();

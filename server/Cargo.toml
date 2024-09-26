@@ -13,15 +13,14 @@ futures = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 pem = { workspace = true }
-quinn_master = { workspace = true,optional = true }
+quinn-proto_11 = { workspace = true, optional = true}
 quinn-proto_master = { workspace = true,optional = true }
-quinn_10 = { workspace = true, optional = true}
-quinn-proto_10 = { workspace = true, optional = true}
+quinn_11 = { workspace = true, optional = true}
+quinn_master = { workspace = true,optional = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rcgen = { workspace = true }
-rustls = { workspace = true, features = ["dangerous_configuration"] }
-rustls-pemfile = { workspace = true }
+rustls = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 solana-sdk = { workspace = true }
@@ -32,8 +31,9 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
+x509-parser = { workspace = true }
 
 [features]
-default = ["use_quinn_master"]
-use_quinn_10 = ["quinn_10", "quinn-proto_10"]
+default = ["use_quinn_11"]
+use_quinn_11 = ["quinn_11", "quinn-proto_11"]
 use_quinn_master = ["quinn_master", "quinn-proto_master"]
