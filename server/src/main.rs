@@ -120,7 +120,6 @@ fn create_server_endpoint(
 }
 
 fn main() {
-    //solana_logger::setup();
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -201,9 +200,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                         .num_refused_connections
                         .fetch_add(1, Ordering::Relaxed);
 
-                    #[cfg(feature = "use_quinn_master")]
-                    {conn.refuse();}
-                    // quinn v0.10 doesn't have refuse, so we just drop.
+                    conn.refuse();
                 } else if stateless_retry && !conn.remote_address_validated() {
                     warn!("requiring connection to validate its address");
                     conn.retry().unwrap();
@@ -288,7 +285,7 @@ async fn handle_connection(
                             break;
                         }
 
-                        stats.num_received_streams.fetch_add(1, Ordering::SeqCst);
+                        stats.num_received_streams.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             });

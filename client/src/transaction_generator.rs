@@ -77,8 +77,14 @@ pub fn generate_transactions(count: usize, is_large: bool) -> Vec<Vec<u8>> {
         .collect_vec()
 }
 
-pub fn generate_dummy_data(size: usize) -> Vec<u8> {
-    (0..size)
-        .map(|x| (x % (u8::MAX as usize)) as u8)
-        .collect_vec()
+pub fn generate_dummy_data(transaction_id: usize, timestamp: u64, size: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(size as usize);
+
+    data.extend_from_slice(&transaction_id.to_le_bytes());
+
+    data.extend_from_slice(&timestamp.to_le_bytes());
+
+    data.resize(size as usize, 0);
+
+    data
 }

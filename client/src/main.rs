@@ -7,6 +7,8 @@ compile_error!(
 Try `cargo build --no-default-features --features ...` instead."
 );
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 #[cfg(feature = "use_quinn_11")]
 use quinn_11::ClientConfig;
 #[cfg(feature = "use_quinn_master")]
@@ -86,6 +88,8 @@ async fn run_endpoint(
         bind,
         duration,
         tx_size,
+        max_txs_num,
+        num_connections,
         ..
     }: ClientCliParameters,
     task_id: usize,
@@ -100,6 +104,7 @@ async fn run_endpoint(
     info!("connected task `{task_id}` at {:?}", start.elapsed());
 
     let start = Instant::now();
+    let mut transaction_id = 0;
     loop {
         if let Some(duration) = duration {
             if start.elapsed() >= duration {
@@ -107,10 +112,17 @@ async fn run_endpoint(
                 break;
             }
         }
+        if let Some(max_txs_num) = max_txs_num {
+            if transaction_id == max_txs_num / num_connections {
+                info!("Transaction generator for task `{task_id}` is stopping...");
+                break;
+            }
+        }
 
-        let data = generate_dummy_data(tx_size);
+        let data = generate_dummy_data(transaction_id, timestamp(), tx_size);
         let result = send_data_over_stream(&connection, &data).await;
         debug!("{:?}", result);
+        transaction_id += 1;
     }
 
     let connection_stats = connection.stats();
@@ -120,4 +132,12 @@ async fn run_endpoint(
     // Give the server a fair chance to receive the close packet
     endpoint.wait_idle().await;
     Ok(())
+}
+
+/// return timestamp as ms
+pub fn timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("create timestamp in timing")
+        .as_millis() as u64
 }
