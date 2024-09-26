@@ -29,6 +29,6 @@ rand_chacha = { workspace = true }
 server = { path = "../server" }
 
 [features]
-default = ["use_quinn_11"]
+default = ["use_quinn_master"]
 use_quinn_master = ["quinn_master"]
 use_quinn_11 = ["quinn_11"]

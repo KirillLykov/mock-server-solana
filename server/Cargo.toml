@@ -34,6 +34,6 @@ tracing-subscriber = { workspace = true }
 x509-parser = { workspace = true }
 
 [features]
-default = ["use_quinn_11"]
+default = ["use_quinn_master"]
 use_quinn_11 = ["quinn_11", "quinn-proto_11"]
 use_quinn_master = ["quinn_master", "quinn-proto_master"]
