@@ -7,12 +7,13 @@ compile_error!(
 Try `cargo build --no-default-features --features ...` instead."
 );
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "use_quinn_11")]
 use quinn_11::ClientConfig;
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::ClientConfig;
+use tokio::time::sleep;
 use {
     client::{
         cli::{build_cli_parameters, ClientCliParameters},
@@ -125,6 +126,9 @@ async fn run_endpoint(
         transaction_id += 1;
     }
 
+    // When the connection is closed all the streams that haven't been delivered yet will be lost.
+    // Sleep to give it some time to deliver all the pending streams.
+    sleep(Duration::from_secs(1)).await;
     let connection_stats = connection.stats();
     info!("Connection stats for task `{task_id}`: {connection_stats:?}");
     connection.close(0u32.into(), b"done");

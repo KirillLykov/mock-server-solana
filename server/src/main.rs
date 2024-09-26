@@ -24,6 +24,8 @@ use {
 };
 
 use {
+    bytes::Bytes,
+    chrono::Utc,
     pem::Pem,
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
@@ -48,7 +50,12 @@ use {
         },
         time::Instant,
     },
-    tokio::signal,
+    tokio::{
+        fs::File,
+        io::{AsyncWriteExt, BufWriter},
+        signal,
+        sync::mpsc::{unbounded_channel, UnboundedSender},
+    },
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, info_span, trace, warn},
 };
@@ -171,6 +178,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
         max_concurrent_streams,
         stream_receive_window_size,
         receive_window_size,
+        write_reordering_log,
     } = options;
 
     let identity = Keypair::new();
@@ -210,7 +218,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
                     let connection = conn.await?;
-                    let fut = handle_connection(connection, stats.clone(), token.clone());
+                    let fut = handle_connection(connection, write_reordering_log, stats.clone(), token.clone());
                     tokio::spawn(async move {
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
@@ -229,8 +237,28 @@ fn check_connection_limit(endpoint: &Endpoint, connection_limit: Option<usize>) 
     connection_limit.map_or(false, |n| endpoint.open_connections() >= n)
 }
 
+struct TxInfo {
+    pub tx_id: usize,
+    pub timestamp_ms: u64,
+}
+
+impl From<&Bytes> for TxInfo {
+    fn from(data: &Bytes) -> Self {
+        assert!(data.len() >= 16, "Data must be at least 16 bytes long");
+
+        let tx_id = usize::from_le_bytes(data[0..8].try_into().unwrap());
+        let timestamp_ms = u64::from_le_bytes(data[8..16].try_into().unwrap());
+
+        TxInfo {
+            tx_id,
+            timestamp_ms,
+        }
+    }
+}
+
 async fn handle_connection(
     connection: Connection,
+    write_reordering_log: bool,
     stats: Arc<Stats>,
     token: CancellationToken,
 ) -> Result<(), QuicServerError> {
@@ -241,6 +269,55 @@ async fn handle_connection(
         );
         let _enter = span.enter();
         info!("Connection have been established.");
+
+        let connection_id = connection.stable_id();
+        let tx_info_sender = if write_reordering_log {
+            let (tx_info_sender, mut tx_info_receiver) = unbounded_channel::<TxInfo>();
+
+            let file_name = format!("reorder-id-{connection_id}.csv");
+            let file = File::create(file_name)
+                .await
+                .expect("We should be able to create a file for log");
+            // it will flush when the buffer is full, so each 64KB because it is typical sector size.
+            let mut writer = BufWriter::with_capacity(64 * 1024, file);
+            let line = format!("#timestamp,max seen tx id,timestamp for max seen tx id (ms),current tx id,timestamp for current tx id(ms)\n");
+            writer.write_all(line.as_bytes()).await.unwrap();
+
+            let _ = tokio::spawn(async move {
+                let mut max_seen_tx_info: Option<TxInfo> = None;
+                loop {
+                    let Some(tx_info) = tx_info_receiver.recv().await else {
+                        info!("Stop tx_info processing task...");
+                        break;
+                    };
+                    match max_seen_tx_info {
+                        None => {
+                            max_seen_tx_info = Some(tx_info);
+                        }
+                        Some(ref mut max_seen) => {
+                            let now = Utc::now();
+                            let line = format!(
+                                "{now},{},{},{},{}\n",
+                                max_seen.tx_id,
+                                max_seen.timestamp_ms,
+                                tx_info.tx_id,
+                                tx_info.timestamp_ms
+                            );
+                            writer.write_all(line.as_bytes()).await.unwrap();
+
+                            // Update max_seen_tx_info if the new tx_id is greater
+                            if tx_info.tx_id > max_seen.tx_id {
+                                *max_seen = tx_info;
+                            }
+                        }
+                    }
+                }
+                writer.flush().await.unwrap();
+            });
+            Some(tx_info_sender)
+        } else {
+            None
+        };
 
         // Each stream initiated by the client constitutes a new request.
         loop {
@@ -264,6 +341,7 @@ async fn handle_connection(
             let mut packet_accum: Option<PacketAccumulator> = None;
             let stats = stats.clone();
             tokio::spawn({
+                let tx_info_sender = tx_info_sender.clone();
                 async move {
                     loop {
                         let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
@@ -271,9 +349,13 @@ async fn handle_connection(
                             stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
                             break; // not sure if the right thing to do
                         };
-                        let res =
-                            handle_stream_chunk_accumulation(chunk, &mut packet_accum, &stats)
-                                .await;
+                        let res = handle_stream_chunk_accumulation(
+                            chunk,
+                            &mut packet_accum,
+                            &tx_info_sender,
+                            &stats,
+                        )
+                        .await;
                         if let Err(e) = res {
                             error!("failed: {reason}", reason = e.to_string());
                             stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
@@ -281,6 +363,7 @@ async fn handle_connection(
                         }
                         if res.unwrap() {
                             trace!("Finished stream.");
+
                             stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
                             break;
                         }
@@ -299,19 +382,22 @@ async fn handle_connection(
 async fn handle_stream_chunk_accumulation(
     chunk: Option<Chunk>,
     packet_accum: &mut Option<PacketAccumulator>,
+    tx_info_sender: &Option<UnboundedSender<TxInfo>>,
     stats: &Arc<Stats>,
 ) -> Result<bool, QuicServerError> {
     let Some(chunk) = chunk else {
-        //it means that the last chunk has been received, we put all the chunks accumulated to some channel
+        //it means that the last chunk has been received, we put all the chunks
+        //accumulated to some channel
         if let Some(accum) = packet_accum.take() {
-            handle_packet_bytes(accum, &stats).await;
+            handle_packet_bytes(accum, tx_info_sender, &stats).await;
         }
         return Ok(true);
     };
     let chunk_len = chunk.bytes.len() as u64;
     debug!("got chunk of len: {chunk_len}");
-    // This code is copied from nonblocking/quic.rs. Interesting to know if these checks are sufficient.
-    // shouldn't happen, but sanity check the size and offsets
+    // This code is copied from nonblocking/quic.rs. Interesting to know if
+    // these checks are sufficient. shouldn't happen, but sanity check the size
+    // and offsets
     if chunk.offset > PACKET_DATA_SIZE as u64 || chunk_len > PACKET_DATA_SIZE as u64 {
         debug!("failed validation with chunk_len={chunk_len} > {PACKET_DATA_SIZE}");
         return Err(QuicServerError::FailedReadChunk);
@@ -354,11 +440,29 @@ async fn handle_stream_chunk_accumulation(
     Ok(false)
 }
 
-async fn handle_packet_bytes(accum: PacketAccumulator, stats: &Arc<Stats>) {
+async fn handle_packet_bytes(
+    accum: PacketAccumulator,
+    tx_info_sender: &Option<UnboundedSender<TxInfo>>,
+    stats: &Arc<Stats>,
+) {
     debug!(
         "Received data size {}",
         accum.chunks.len() * PACKET_DATA_SIZE
     );
+    if let Some(tx_info_sender) = tx_info_sender {
+        // client writes tx_id and timestamp at the first 16bytes, so need to
+        // check only first chunk. in case of unlikely event that the packet is
+        // split between two chunks where first one is smaller than 16 bytes,
+        // just ignore this packet.
+        if accum.chunks[0].bytes.len() >= 16 {
+            let tx_info = TxInfo::from(&accum.chunks[0].bytes);
+
+            tx_info_sender
+                .send(tx_info)
+                .expect("Receiver should not be dropped.");
+        }
+    }
+
     stats.num_received_bytes.fetch_add(
         (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
         Ordering::Relaxed,
