@@ -1,18 +1,23 @@
 pub mod cli;
 pub mod packet_accumulator;
+pub mod tls_certificates;
 
-#[cfg(feature = "use_quinn_10")]
-use quinn_10::ConnectionError;
+#[cfg(feature = "use_quinn_11")]
+use quinn_11 as quinn;
+
 #[cfg(feature = "use_quinn_master")]
-use quinn_master::ConnectionError;
+use quinn_master as quinn;
+
+#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
+use quinn::{crypto::rustls::NoInitialCipherSuite, ConnectionError};
 
 use {
-    rustls::{server::ClientCertVerified, Certificate, DistinguishedName},
-    std::{
-        io,
-        sync::Arc,
-        time::{Duration, SystemTime},
+    rustls::{
+        pki_types::{CertificateDer, UnixTime},
+        server::danger::ClientCertVerified,
+        DistinguishedName,
     },
+    std::{io, sync::Arc, time::Duration},
     thiserror::Error,
 };
 
@@ -40,6 +45,8 @@ pub enum QuicServerError {
     EndpointFailed(io::Error),
     #[error("TLS error: {0}")]
     TlsError(#[from] rustls::Error),
+    #[error("No initial cipher suite")]
+    NoInitialCipherSuite(#[from] NoInitialCipherSuite),
     #[error(transparent)]
     ConnectionError(#[from] ConnectionError),
     #[error("Failed to read chunk")]
@@ -48,25 +55,66 @@ pub enum QuicServerError {
     EndpointError(#[from] io::Error),
 }
 
-pub struct SkipClientVerification;
+#[derive(Debug)]
+pub struct SkipClientVerification(Arc<rustls::crypto::CryptoProvider>);
 
 impl SkipClientVerification {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+        Arc::new(Self(Arc::new(rustls::crypto::ring::default_provider())))
     }
 }
 
-impl rustls::server::ClientCertVerifier for SkipClientVerification {
-    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
+impl rustls::server::danger::ClientCertVerifier for SkipClientVerification {
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer,
+        _intermediates: &[CertificateDer],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
         &[]
     }
 
-    fn verify_client_cert(
+    fn verify_tls12_signature(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _now: SystemTime,
-    ) -> Result<ClientCertVerified, rustls::Error> {
-        Ok(rustls::server::ClientCertVerified::assertion())
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        self.offer_client_auth()
     }
 }
