@@ -23,10 +23,10 @@ Note that we don't use blockhash. This would require usage of RPC client.
 ## Features
 
 Both client and server allows to select quinn version using features.
-To use `quinn 0.10.2` and `quinn-proto 0.10.6` (the same as agave atm), do the following:
+To use `quinn 0.11.4` and `quinn-proto 0.11.7` (the same as agave atm), do the following:
 
-```
-cargo build --features "use_quinn_10" --no-default-features
+```shell
+cargo build --features "use_quinn_11" --no-default-features
 ```
 
 To use quinn master (default), just don't specify any feature.
