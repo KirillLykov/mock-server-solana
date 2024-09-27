@@ -121,8 +121,7 @@ async fn run_endpoint(
         }
 
         let data = generate_dummy_data(transaction_id, timestamp(), tx_size);
-        let result = send_data_over_stream(&connection, &data).await;
-        debug!("{:?}", result);
+        let _ = send_data_over_stream(&connection, &data).await;
         transaction_id += 1;
     }
 
