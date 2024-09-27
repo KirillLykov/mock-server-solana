@@ -77,14 +77,9 @@ pub fn generate_transactions(count: usize, is_large: bool) -> Vec<Vec<u8>> {
         .collect_vec()
 }
 
-pub fn generate_dummy_data(transaction_id: usize, timestamp: u64, size: u64) -> Vec<u8> {
-    let mut data = Vec::with_capacity(size as usize);
+pub fn generate_dummy_data(buffer: &mut [u8], transaction_id: usize, timestamp: u64, _size: u64) {
+    buffer[0..8].copy_from_slice(&transaction_id.to_le_bytes());
 
-    data.extend_from_slice(&transaction_id.to_le_bytes());
-
-    data.extend_from_slice(&timestamp.to_le_bytes());
-
-    data.resize(size as usize, 0);
-
-    data
+    buffer[8..16].copy_from_slice(&timestamp.to_le_bytes());
+    // we can fill in the rest with some data but I think there is enough entropy due to tx_id and timestamp
 }

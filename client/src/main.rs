@@ -7,13 +7,10 @@ compile_error!(
 Try `cargo build --no-default-features --features ...` instead."
 );
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 #[cfg(feature = "use_quinn_11")]
 use quinn_11::ClientConfig;
 #[cfg(feature = "use_quinn_master")]
 use quinn_master::ClientConfig;
-use tokio::time::sleep;
 use {
     client::{
         cli::{build_cli_parameters, ClientCliParameters},
@@ -24,9 +21,12 @@ use {
         },
         transaction_generator::generate_dummy_data,
     },
-    solana_sdk::{signature::Keypair, signer::EncodableKey},
-    std::{sync::Arc, time::Instant},
-    tokio::task::JoinSet,
+    solana_sdk::{packet::PACKET_DATA_SIZE, signature::Keypair, signer::EncodableKey},
+    std::{
+        sync::Arc,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    },
+    tokio::{task::JoinSet, time::sleep},
     tracing::{error, info},
 };
 
@@ -106,6 +106,7 @@ async fn run_endpoint(
 
     let start = Instant::now();
     let mut transaction_id = 0;
+    let mut tx_buffer = [0u8; PACKET_DATA_SIZE];
     loop {
         if let Some(duration) = duration {
             if start.elapsed() >= duration {
@@ -120,8 +121,8 @@ async fn run_endpoint(
             }
         }
 
-        let data = generate_dummy_data(transaction_id, timestamp(), tx_size);
-        let _ = send_data_over_stream(&connection, &data).await;
+        generate_dummy_data(&mut tx_buffer, transaction_id, timestamp(), tx_size);
+        let _ = send_data_over_stream(&connection, &tx_buffer[0..tx_size as usize]).await;
         transaction_id += 1;
     }
 

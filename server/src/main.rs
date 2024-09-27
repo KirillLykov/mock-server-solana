@@ -42,7 +42,6 @@ use {
     },
     solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
     std::{
-        cmp::min,
         net::SocketAddr,
         sync::{
             atomic::{AtomicU64, Ordering},
@@ -299,6 +298,7 @@ async fn handle_connection(
             // do the same as in the agave
             let mut packet_accum: Option<PacketAccumulator> = None;
             let stats = stats.clone();
+            // In agave we spawn for each stream, yet it is better not
             //tokio::spawn({
             //let tx_info_sender = tx_info_sender.clone();
             //async move {
@@ -410,12 +410,8 @@ async fn handle_packet_bytes(
         accum.meta.size
     );
     if let Some(tx_info_sender) = tx_info_sender {
-        //let mut dest: [u8; 16] = [0; 16];
-        //if accum.chunks.len() == 1 {
-        //    concat_chunks(&mut dest, &accum.chunks[0].bytes, &[]);
-        //} else if accum.chunks.len() == 2 {
-        //    concat_chunks(&mut dest, &accum.chunks[0].bytes, &accum.chunks[1].bytes);
-        //}
+        // probably, it is possible to use one buffer for all of the streams,
+        // for code simplicity don't do it here.
         let mut dest: [u8; 1232] = [0; 1232];
         for chunk in &accum.chunks {
             dest[chunk.offset..chunk.end_of_chunk].copy_from_slice(&chunk.bytes);
@@ -432,18 +428,6 @@ async fn handle_packet_bytes(
         (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
         Ordering::Relaxed,
     );
-}
-
-fn concat_chunks(dest: &mut [u8], src1: &[u8], src2: &[u8]) {
-    let dest_len = dest.len();
-    dest[..min(src1.len(), dest_len)].copy_from_slice(&src1[..min(src1.len(), dest_len)]);
-
-    // If src1 does not fill dest, copy from src2
-    if src1.len() < dest_len {
-        let remaining_len = dest_len - min(src1.len(), dest_len);
-        dest[src1.len()..src1.len() + min(remaining_len, src2.len())]
-            .copy_from_slice(&src2[..min(remaining_len, src2.len())]);
-    }
 }
 
 async fn run_reorder_log_service(
