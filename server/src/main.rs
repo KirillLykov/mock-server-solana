@@ -405,8 +405,9 @@ async fn handle_packet_bytes(
     stats: &Arc<Stats>,
 ) {
     debug!(
-        "Received data size {}",
-        accum.chunks.len() * PACKET_DATA_SIZE
+        "Num chunks {}, Received data size {}",
+        accum.chunks.len(),
+        accum.meta.size
     );
     if let Some(tx_info_sender) = tx_info_sender {
         //let mut dest: [u8; 16] = [0; 16];
