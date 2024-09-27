@@ -24,7 +24,6 @@ use {
 };
 
 use {
-    bytes::Bytes,
     chrono::Utc,
     pem::Pem,
     server::{
@@ -43,6 +42,7 @@ use {
     },
     solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
     std::{
+        cmp::min,
         net::SocketAddr,
         sync::{
             atomic::{AtomicU64, Ordering},
@@ -242,10 +242,8 @@ struct TxInfo {
     pub timestamp_ms: u64,
 }
 
-impl From<&Bytes> for TxInfo {
-    fn from(data: &Bytes) -> Self {
-        assert!(data.len() >= 16, "Data must be at least 16 bytes long");
-
+impl From<&[u8; 16]> for TxInfo {
+    fn from(data: &[u8; 16]) -> Self {
         let tx_id = usize::from_le_bytes(data[0..8].try_into().unwrap());
         let timestamp_ms = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
@@ -410,23 +408,35 @@ async fn handle_packet_bytes(
         accum.chunks.len() * PACKET_DATA_SIZE
     );
     if let Some(tx_info_sender) = tx_info_sender {
-        // client writes tx_id and timestamp at the first 16bytes, so need to
-        // check only first chunk. in case of unlikely event that the packet is
-        // split between two chunks where first one is smaller than 16 bytes,
-        // just ignore this packet.
-        if accum.chunks[0].bytes.len() >= 16 {
-            let tx_info = TxInfo::from(&accum.chunks[0].bytes);
-
-            tx_info_sender
-                .send(tx_info)
-                .expect("Receiver should not be dropped.");
+        let mut dest: [u8; 16] = [0; 16];
+        if accum.chunks.len() == 1 {
+            concat_chunks(&mut dest, &accum.chunks[0].bytes, &[]);
+        } else if accum.chunks.len() == 2 {
+            concat_chunks(&mut dest, &accum.chunks[0].bytes, &accum.chunks[1].bytes);
         }
+        let tx_info = TxInfo::from(&dest);
+
+        tx_info_sender
+            .send(tx_info)
+            .expect("Receiver should not be dropped.");
     }
 
     stats.num_received_bytes.fetch_add(
         (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
         Ordering::Relaxed,
     );
+}
+
+fn concat_chunks(dest: &mut [u8], src1: &[u8], src2: &[u8]) {
+    let dest_len = dest.len();
+    dest[..min(src1.len(), dest_len)].copy_from_slice(&src1[..min(src1.len(), dest_len)]);
+
+    // If src1 does not fill dest, copy from src2
+    if src1.len() < dest_len {
+        let remaining_len = dest_len - min(src1.len(), dest_len);
+        dest[src1.len()..src1.len() + min(remaining_len, src2.len())]
+            .copy_from_slice(&src2[..min(remaining_len, src2.len())]);
+    }
 }
 
 async fn run_reorder_log_service(
