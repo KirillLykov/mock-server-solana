@@ -110,6 +110,8 @@ pub fn create_client_config(client_certificate: Arc<QuicClientCertificate>) -> C
 
     let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(crypto).unwrap()));
     let mut transport_config = TransportConfig::default();
+    transport_config.packet_threshold(u32::MAX);
+    transport_config.time_threshold(100f32);
 
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
     transport_config.max_idle_timeout(Some(timeout));
