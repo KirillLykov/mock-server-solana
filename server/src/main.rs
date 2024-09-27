@@ -54,7 +54,7 @@ use {
         fs::File,
         io::{AsyncWriteExt, BufWriter},
         signal,
-        sync::mpsc::{unbounded_channel, UnboundedSender},
+        sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     },
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, info_span, trace, warn},
@@ -270,50 +270,10 @@ async fn handle_connection(
         let _enter = span.enter();
         info!("Connection have been established.");
 
-        let connection_id = connection.stable_id();
         let tx_info_sender = if write_reordering_log {
-            let (tx_info_sender, mut tx_info_receiver) = unbounded_channel::<TxInfo>();
-
-            let file_name = format!("reorder-id-{connection_id}.csv");
-            let file = File::create(file_name)
-                .await
-                .expect("We should be able to create a file for log");
-            // it will flush when the buffer is full, so each 64KB because it is typical sector size.
-            let mut writer = BufWriter::with_capacity(64 * 1024, file);
-            let line = format!("#timestamp,max seen tx id,timestamp for max seen tx id (ms),current tx id,timestamp for current tx id(ms)\n");
-            writer.write_all(line.as_bytes()).await.unwrap();
-
-            let _ = tokio::spawn(async move {
-                let mut max_seen_tx_info: Option<TxInfo> = None;
-                loop {
-                    let Some(tx_info) = tx_info_receiver.recv().await else {
-                        info!("Stop tx_info processing task...");
-                        break;
-                    };
-                    match max_seen_tx_info {
-                        None => {
-                            max_seen_tx_info = Some(tx_info);
-                        }
-                        Some(ref mut max_seen) => {
-                            let now = Utc::now();
-                            let line = format!(
-                                "{now},{},{},{},{}\n",
-                                max_seen.tx_id,
-                                max_seen.timestamp_ms,
-                                tx_info.tx_id,
-                                tx_info.timestamp_ms
-                            );
-                            writer.write_all(line.as_bytes()).await.unwrap();
-
-                            // Update max_seen_tx_info if the new tx_id is greater
-                            if tx_info.tx_id > max_seen.tx_id {
-                                *max_seen = tx_info;
-                            }
-                        }
-                    }
-                }
-                writer.flush().await.unwrap();
-            });
+            let (tx_info_sender, tx_info_receiver) = unbounded_channel::<TxInfo>();
+            let connection_id = connection.stable_id();
+            run_reorder_log_service(connection_id, tx_info_receiver).await;
             Some(tx_info_sender)
         } else {
             None
@@ -467,4 +427,47 @@ async fn handle_packet_bytes(
         (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
         Ordering::Relaxed,
     );
+}
+
+async fn run_reorder_log_service(
+    connection_id: usize,
+    mut tx_info_receiver: UnboundedReceiver<TxInfo>,
+) {
+    let file_name = format!("reorder-id-{connection_id}.csv");
+    let file = File::create(file_name)
+        .await
+        .expect("We should be able to create a file for log");
+    // it will flush when the buffer is full, so each 64KB because it is typical sector size.
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+    let line = format!("#timestamp,max seen tx id,timestamp for max seen tx id (ms),current tx id,timestamp for current tx id(ms)\n");
+    writer.write_all(line.as_bytes()).await.unwrap();
+
+    let _ = tokio::spawn(async move {
+        let mut max_seen_tx_info: Option<TxInfo> = None;
+        loop {
+            let Some(tx_info) = tx_info_receiver.recv().await else {
+                info!("Stop tx_info processing task...");
+                break;
+            };
+            match max_seen_tx_info {
+                None => {
+                    max_seen_tx_info = Some(tx_info);
+                }
+                Some(ref mut max_seen) => {
+                    let now = Utc::now();
+                    let line = format!(
+                        "{now},{},{},{},{}\n",
+                        max_seen.tx_id, max_seen.timestamp_ms, tx_info.tx_id, tx_info.timestamp_ms
+                    );
+                    writer.write_all(line.as_bytes()).await.unwrap();
+
+                    // Update max_seen_tx_info if the new tx_id is greater
+                    if tx_info.tx_id > max_seen.tx_id {
+                        *max_seen = tx_info;
+                    }
+                }
+            }
+        }
+        writer.flush().await.unwrap();
+    });
 }
