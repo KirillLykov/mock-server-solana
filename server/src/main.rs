@@ -439,7 +439,9 @@ async fn run_reorder_log_service(
         .expect("We should be able to create a file for log");
     // it will flush when the buffer is full, so each 64KB because it is typical sector size.
     let mut writer = BufWriter::with_capacity(64 * 1024, file);
-    let line = format!("#timestamp,max seen tx id,timestamp for max seen tx id (ms),current tx id,timestamp for current tx id(ms)\n");
+    let line = format!(
+        "timestamp,max_seen_tx_id,timestamp_max_seen_ms,current_tx_id,timestamp_current_ms\n"
+    );
     writer.write_all(line.as_bytes()).await.unwrap();
 
     let _ = tokio::spawn(async move {
