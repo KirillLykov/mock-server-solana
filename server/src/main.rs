@@ -242,8 +242,9 @@ struct TxInfo {
     pub timestamp_ms: u64,
 }
 
-impl From<&[u8; 16]> for TxInfo {
-    fn from(data: &[u8; 16]) -> Self {
+impl From<&[u8]> for TxInfo {
+    fn from(data: &[u8]) -> Self {
+        assert!(data.len() >= 16);
         let tx_id = usize::from_le_bytes(data[0..8].try_into().unwrap());
         let timestamp_ms = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
@@ -408,13 +409,18 @@ async fn handle_packet_bytes(
         accum.chunks.len() * PACKET_DATA_SIZE
     );
     if let Some(tx_info_sender) = tx_info_sender {
-        let mut dest: [u8; 16] = [0; 16];
-        if accum.chunks.len() == 1 {
-            concat_chunks(&mut dest, &accum.chunks[0].bytes, &[]);
-        } else if accum.chunks.len() == 2 {
-            concat_chunks(&mut dest, &accum.chunks[0].bytes, &accum.chunks[1].bytes);
+        //let mut dest: [u8; 16] = [0; 16];
+        //if accum.chunks.len() == 1 {
+        //    concat_chunks(&mut dest, &accum.chunks[0].bytes, &[]);
+        //} else if accum.chunks.len() == 2 {
+        //    concat_chunks(&mut dest, &accum.chunks[0].bytes, &accum.chunks[1].bytes);
+        //}
+        let mut dest: [u8; 1232] = [0; 1232];
+        for chunk in &accum.chunks {
+            dest[chunk.offset..chunk.end_of_chunk].copy_from_slice(&chunk.bytes);
         }
-        let tx_info = TxInfo::from(&dest);
+
+        let tx_info = TxInfo::from(&dest[0..16]);
 
         tx_info_sender
             .send(tx_info)
