@@ -299,38 +299,38 @@ async fn handle_connection(
             // do the same as in the agave
             let mut packet_accum: Option<PacketAccumulator> = None;
             let stats = stats.clone();
-            tokio::spawn({
-                let tx_info_sender = tx_info_sender.clone();
-                async move {
-                    loop {
-                        let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
-                            debug!("Stream failed");
-                            stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
-                            break; // not sure if the right thing to do
-                        };
-                        let res = handle_stream_chunk_accumulation(
-                            chunk,
-                            &mut packet_accum,
-                            &tx_info_sender,
-                            &stats,
-                        )
-                        .await;
-                        if let Err(e) = res {
-                            error!("failed: {reason}", reason = e.to_string());
-                            stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
-                            break;
-                        }
-                        if res.unwrap() {
-                            trace!("Finished stream.");
-
-                            stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
-                            break;
-                        }
-
-                        stats.num_received_streams.fetch_add(1, Ordering::Relaxed);
-                    }
+            //tokio::spawn({
+            //let tx_info_sender = tx_info_sender.clone();
+            //async move {
+            loop {
+                let Ok(chunk) = stream.read_chunk(PACKET_DATA_SIZE, true).await else {
+                    debug!("Stream failed");
+                    stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
+                    break; // not sure if the right thing to do
+                };
+                let res = handle_stream_chunk_accumulation(
+                    chunk,
+                    &mut packet_accum,
+                    &tx_info_sender,
+                    &stats,
+                )
+                .await;
+                if let Err(e) = res {
+                    error!("failed: {reason}", reason = e.to_string());
+                    stats.num_errored_streams.fetch_add(1, Ordering::Relaxed);
+                    break;
                 }
-            });
+                if res.unwrap() {
+                    trace!("Finished stream.");
+
+                    stats.num_finished_streams.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+
+                stats.num_received_streams.fetch_add(1, Ordering::Relaxed);
+            }
+            //}
+            //});
         }
     }
     .await?;
