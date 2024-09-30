@@ -127,9 +127,13 @@ fn create_server_endpoint(
 }
 
 fn main() {
+    // Check if output is going to a terminal (stdout)
+    let is_terminal = atty::is(atty::Stream::Stderr);
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_ansi(is_terminal)
             .finish(),
     )
     .unwrap();
