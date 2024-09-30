@@ -33,8 +33,15 @@ pub struct ServerCliParameters {
     #[clap(long, default_value = "12320")]
     pub receive_window_size: u32,
 
-    #[clap(long, default_value = "false")]
-    pub write_reordering_log: bool,
+    #[clap(
+        long,
+        help = "Write reordering log file if specified. The exact file name will be \
+        `<reordering_log_file>-<connection_id>.csv`. The log has the following columns: \
+        `[timestamp, max_seen_tx_id, timestamp_max_seen_ms, current_tx_id, timestamp_current_ms]`. \
+        `timestamp` is the server timestamp. `max_seen_tx_id` identifies the max transaction ID \
+        received so far, while `timestamp_max_seen_ms` is the corresponding timestamp."
+    )]
+    pub reordering_log_file: Option<String>,
 }
 
 pub fn build_cli_parameters() -> ServerCliParameters {

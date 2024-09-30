@@ -177,7 +177,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
         max_concurrent_streams,
         stream_receive_window_size,
         receive_window_size,
-        write_reordering_log,
+        reordering_log_file,
     } = options;
 
     let identity = Keypair::new();
@@ -217,7 +217,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
                     let connection = conn.await?;
-                    let fut = handle_connection(connection, write_reordering_log, stats.clone(), token.clone());
+                    let fut = handle_connection(connection, reordering_log_file.clone(), stats.clone(), token.clone());
                     tokio::spawn(async move {
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
@@ -256,7 +256,7 @@ impl From<&[u8]> for TxInfo {
 
 async fn handle_connection(
     connection: Connection,
-    write_reordering_log: bool,
+    reordering_log_file: Option<String>,
     stats: Arc<Stats>,
     token: CancellationToken,
 ) -> Result<(), QuicServerError> {
@@ -268,10 +268,14 @@ async fn handle_connection(
         let _enter = span.enter();
         info!("Connection have been established.");
 
-        let tx_info_sender = if write_reordering_log {
+        let tx_info_sender = if let Some(reordering_log_file) = reordering_log_file {
             let (tx_info_sender, tx_info_receiver) = unbounded_channel::<TxInfo>();
             let connection_id = connection.stable_id();
-            run_reorder_log_service(connection_id, tx_info_receiver).await;
+            run_reorder_log_service(
+                format!("{reordering_log_file}-{connection_id}.csv"),
+                tx_info_receiver,
+            )
+            .await;
             Some(tx_info_sender)
         } else {
             None
@@ -431,10 +435,9 @@ async fn handle_packet_bytes(
 }
 
 async fn run_reorder_log_service(
-    connection_id: usize,
+    file_name: String,
     mut tx_info_receiver: UnboundedReceiver<TxInfo>,
 ) {
-    let file_name = format!("reorder-id-{connection_id}.csv");
     let file = File::create(file_name)
         .await
         .expect("We should be able to create a file for log");
