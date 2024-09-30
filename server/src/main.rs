@@ -54,6 +54,7 @@ use {
         io::{AsyncWriteExt, BufWriter},
         signal,
         sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        time::{self, Duration},
     },
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, info_span, trace, warn},
@@ -155,6 +156,37 @@ struct Stats {
     num_received_bytes: AtomicU64,
 }
 
+impl Stats {
+    /// Load the current state into a new Stats object
+    fn load_current(&self) -> Stats {
+        Stats {
+            num_received_streams: AtomicU64::new(self.num_received_streams.load(Ordering::Relaxed)),
+            num_errored_streams: AtomicU64::new(self.num_errored_streams.load(Ordering::Relaxed)),
+            num_accepted_connections: AtomicU64::new(
+                self.num_accepted_connections.load(Ordering::Relaxed),
+            ),
+            num_refused_connections: AtomicU64::new(
+                self.num_refused_connections.load(Ordering::Relaxed),
+            ),
+            num_connection_errors: AtomicU64::new(
+                self.num_connection_errors.load(Ordering::Relaxed),
+            ),
+            num_finished_streams: AtomicU64::new(self.num_finished_streams.load(Ordering::Relaxed)),
+            num_received_bytes: AtomicU64::new(self.num_received_bytes.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Calculate and log the differences between two `Stats` instances
+    fn log_tps_bitrate(&self, previous: &Stats) {
+        let diff_finished_streams = self.num_finished_streams.load(Ordering::Relaxed)
+            - previous.num_finished_streams.load(Ordering::Relaxed);
+        let diff_received_bytes = self.num_received_bytes.load(Ordering::Relaxed)
+            - previous.num_received_bytes.load(Ordering::Relaxed);
+
+        info!("tps: {diff_finished_streams}, bitrate: {diff_received_bytes}");
+    }
+}
+
 #[tokio::main]
 async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let token = CancellationToken::new();
@@ -189,6 +221,27 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     )?;
     let endpoint = create_server_endpoint(listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
+
+    tokio::spawn({
+        let stats = stats.clone();
+        let mut previous_stats = Stats::default();
+        let token = token.clone();
+        async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                _ = token.cancelled() => {
+                    println!("{stats:?}");
+                    break;
+                }
+                _ = interval.tick() => {
+                        stats.log_tps_bitrate(&previous_stats);
+                        previous_stats = stats.load_current();
+                    }
+                }
+            }
+        }
+    });
 
     loop {
         tokio::select! {
@@ -428,10 +481,9 @@ async fn handle_packet_bytes(
             .expect("Receiver should not be dropped.");
     }
 
-    stats.num_received_bytes.fetch_add(
-        (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
-        Ordering::Relaxed,
-    );
+    stats
+        .num_received_bytes
+        .fetch_add((accum.meta.size) as u64, Ordering::Relaxed);
 }
 
 async fn run_reorder_log_service(
