@@ -21,10 +21,13 @@ use {
         },
         transaction_generator::generate_dummy_data,
     },
-    solana_sdk::{signature::Keypair, signer::EncodableKey},
-    std::{sync::Arc, time::Instant},
-    tokio::task::JoinSet,
-    tracing::{debug, error, info},
+    solana_sdk::{packet::PACKET_DATA_SIZE, signature::Keypair, signer::EncodableKey},
+    std::{
+        sync::Arc,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    },
+    tokio::{task::JoinSet, time::sleep},
+    tracing::{error, info},
 };
 
 fn main() {
@@ -86,6 +89,8 @@ async fn run_endpoint(
         bind,
         duration,
         tx_size,
+        max_txs_num,
+        num_connections,
         ..
     }: ClientCliParameters,
     task_id: usize,
@@ -100,6 +105,8 @@ async fn run_endpoint(
     info!("connected task `{task_id}` at {:?}", start.elapsed());
 
     let start = Instant::now();
+    let mut transaction_id = 0;
+    let mut tx_buffer = [0u8; PACKET_DATA_SIZE];
     loop {
         if let Some(duration) = duration {
             if start.elapsed() >= duration {
@@ -107,12 +114,21 @@ async fn run_endpoint(
                 break;
             }
         }
+        if let Some(max_txs_num) = max_txs_num {
+            if transaction_id == max_txs_num / num_connections {
+                info!("Transaction generator for task `{task_id}` is stopping...");
+                break;
+            }
+        }
 
-        let data = generate_dummy_data(tx_size);
-        let result = send_data_over_stream(&connection, &data).await;
-        debug!("{:?}", result);
+        generate_dummy_data(&mut tx_buffer, transaction_id, timestamp(), tx_size);
+        let _ = send_data_over_stream(&connection, &tx_buffer[0..tx_size as usize]).await;
+        transaction_id += 1;
     }
 
+    // When the connection is closed all the streams that haven't been delivered yet will be lost.
+    // Sleep to give it some time to deliver all the pending streams.
+    sleep(Duration::from_secs(1)).await;
     let connection_stats = connection.stats();
     info!("Connection stats for task `{task_id}`: {connection_stats:?}");
     connection.close(0u32.into(), b"done");
@@ -120,4 +136,12 @@ async fn run_endpoint(
     // Give the server a fair chance to receive the close packet
     endpoint.wait_idle().await;
     Ok(())
+}
+
+/// return timestamp as ms
+pub fn timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("create timestamp in timing")
+        .as_millis() as u64
 }

@@ -10,6 +10,8 @@ To model current server with relevant parameters:
 $ RUST_LOG=info ./server --listen 0.0.0.0:8009 --receive-window-size 630784  --max_concurrent_streams 512 --stream-receive-window-size 1232
 ```
 
+Server has an option to write reorder log in the csv file (see `--write_reordering_log`).
+
 2. Client (`client.rs`)
 
 In a new terminal execute:

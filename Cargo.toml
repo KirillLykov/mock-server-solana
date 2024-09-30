@@ -1,6 +1,6 @@
 
 [workspace]
-members = ["server", "client"]
+members = ["client", "server"]
 
 resolver = "2"
 
@@ -11,8 +11,8 @@ repository = "https://github.com/tobedone"
 license = "MIT"
 edition = "2021"
 
-
 [workspace.dependencies]
+chrono = { version = "0.4.38", default-features = false, features = ["clock"]}
 pem = "1.1.1"
 anyhow = "1.0.22"
 bytes = { version = "1.5" }
@@ -25,8 +25,7 @@ tokio = { version = "1.28.1", features = [
     "macros",
     "sync",
 ] }
-tokio-util = {version = "*"}
-#rustls = { version = "0.23.12", features = ["ring"] }
+tokio-util = { version = "*" }
 rustls = { version = "0.23.9", default-features = false }
 tracing = "0.1.10"
 tracing-subscriber = { version = "0.3.0", default-features = false, features = [
@@ -45,8 +44,8 @@ url = "2"
 quinn_master = { package = "quinn", git = "https://github.com/quinn-rs/quinn.git" }
 quinn-proto_master = { package = "quinn-proto", git = "https://github.com/quinn-rs/quinn.git" }
 # versions from the agave
-quinn_11 = { package = "quinn", version = "0.11.4"}
-quinn-proto_11 = { package = "quinn-proto", version = "0.11.7"}
+quinn_11 = { package = "quinn", version = "0.11.4" }
+quinn-proto_11 = { package = "quinn-proto", version = "0.11.7" }
 rcgen = "0.12.0"
 solana-streamer = { version = "1.18.10" }
 solana-sdk = { version = "1.18.10" }

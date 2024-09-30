@@ -29,8 +29,20 @@ pub struct ClientCliParameters {
     )]
     pub duration: Option<Duration>,
 
-    #[clap(long, help = "Size of transaction in bytes.", default_value = "251")]
-    pub tx_size: usize,
+    #[clap(
+        long,
+        conflicts_with = "duration",
+        help = "If specified, limits the benchmark execution to the specified number of transactions.\
+        Each connection will send `max_txs_num/num_connections` transactions, `max_txs_num` must be divisible by `num_connections`."
+    )]
+    pub max_txs_num: Option<usize>,
+
+    // it is u64 (instead of usize) because clap value parser doesn't
+    // work properly with usize.
+    #[clap(long,
+        value_parser = clap::value_parser!(u64).range(16..),
+        help = "Size of transaction in bytes.", default_value = "251")]
+    pub tx_size: u64,
 
     #[clap(
         long,
@@ -47,5 +59,15 @@ fn parse_duration(s: &str) -> Result<Duration, &'static str> {
 }
 
 pub fn build_cli_parameters() -> ClientCliParameters {
-    ClientCliParameters::parse()
+    let parameters = ClientCliParameters::parse();
+    if let Some(num_txs) = parameters.max_txs_num {
+        if num_txs % parameters.num_connections != 0 {
+            eprintln!(
+                "Error: num_txs ({}) is not divisible by num_connections ({}).",
+                num_txs, parameters.num_connections
+            );
+            std::process::exit(1);
+        }
+    }
+    parameters
 }
