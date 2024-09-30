@@ -226,26 +226,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     let endpoint = create_server_endpoint(listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
 
-    tokio::spawn({
-        let stats = stats.clone();
-        let mut previous_stats = Stats::default();
-        let token = token.clone();
-        async move {
-            let mut interval = time::interval(Duration::from_secs(1));
-            loop {
-                tokio::select! {
-                _ = token.cancelled() => {
-                    println!("{stats:?}");
-                    break;
-                }
-                _ = interval.tick() => {
-                        stats.log_tps_bitrate(&previous_stats);
-                        previous_stats = stats.load_current();
-                    }
-                }
-            }
-        }
-    });
+    run_report_stats_service(stats.clone(), token.clone()).await;
 
     loop {
         tokio::select! {
@@ -531,5 +512,26 @@ async fn run_reorder_log_service(
             }
         }
         writer.flush().await.unwrap();
+    });
+}
+
+async fn run_report_stats_service(stats: Arc<Stats>, token: CancellationToken) {
+    tokio::spawn({
+        async move {
+            let mut previous_stats = Stats::default();
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                _ = token.cancelled() => {
+                    println!("{stats:?}");
+                    break;
+                }
+                _ = interval.tick() => {
+                        stats.log_tps_bitrate(&previous_stats);
+                        previous_stats = stats.load_current();
+                    }
+                }
+            }
+        }
     });
 }
