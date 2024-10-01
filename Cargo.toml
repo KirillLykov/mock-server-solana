@@ -12,6 +12,9 @@ license = "MIT"
 edition = "2021"
 
 [workspace.dependencies]
+crossbeam-channel = "0.5.13"
+lazy_static = "1.5.0"
+async-channel = "1.9.0"
 atty = "0.2"
 chrono = { version = "0.4.38", default-features = false, features = ["clock"]}
 pem = "1.1.1"
@@ -40,7 +43,7 @@ tracing-futures = { version = "0.2.0", default-features = false, features = [
     "std-future",
 ] }
 rand = "0.8"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "cargo"] }
 url = "2"
 quinn_master = { package = "quinn", git = "https://github.com/quinn-rs/quinn.git" }
 quinn-proto_master = { package = "quinn-proto", git = "https://github.com/quinn-rs/quinn.git" }
@@ -54,6 +57,7 @@ futures = "0.3.28"
 rand_chacha = "0.3.1"
 itertools = { version = "*" }
 bincode = { version = "*" }
+serde = "1.0.210"
 serde_json = { version = "*" }
 log = { version = "*" }
 smallvec = "1.13.2"
