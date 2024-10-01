@@ -3048,13 +3048,16 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "atty",
  "bincode",
  "bytes",
  "chrono",
  "clap",
+ "crossbeam-channel",
  "futures",
  "itertools 0.13.0",
+ "lazy_static",
  "log",
  "pem 1.1.1",
  "quinn 0.11.5 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -3065,6 +3068,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rcgen 0.12.1",
  "rustls 0.23.13",
+ "serde",
  "serde_json",
  "smallvec",
  "solana-sdk",
