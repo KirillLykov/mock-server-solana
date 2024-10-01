@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod format_as_bits;
 pub mod packet_accumulator;
 pub mod tls_certificates;
 

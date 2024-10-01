@@ -40,7 +40,7 @@ pub struct ClientCliParameters {
     // it is u64 (instead of usize) because clap value parser doesn't
     // work properly with usize.
     #[clap(long,
-        value_parser = clap::value_parser!(u64).range(16..),
+        value_parser = clap::value_parser!(u64).range(16..1232),
         help = "Size of transaction in bytes.", default_value = "251")]
     pub tx_size: u64,
 

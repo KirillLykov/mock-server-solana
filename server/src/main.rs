@@ -28,6 +28,7 @@ use {
     pem::Pem,
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
+        format_as_bits::format_as_bits,
         packet_accumulator::{PacketAccumulator, PacketChunk},
         // This is the new certificate used in v2
         tls_certificates::new_dummy_x509_certificate,
@@ -54,6 +55,7 @@ use {
         io::{AsyncWriteExt, BufWriter},
         signal,
         sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        time::{self, Duration},
     },
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, info_span, trace, warn},
@@ -126,9 +128,13 @@ fn create_server_endpoint(
 }
 
 fn main() {
+    // Check if output is going to a terminal (stdout)
+    let is_terminal = atty::is(atty::Stream::Stderr);
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_ansi(is_terminal)
             .finish(),
     )
     .unwrap();
@@ -153,6 +159,41 @@ struct Stats {
     num_connection_errors: AtomicU64,
     num_finished_streams: AtomicU64,
     num_received_bytes: AtomicU64,
+}
+
+impl Stats {
+    /// Load the current state into a new Stats object
+    fn load_current(&self) -> Stats {
+        Stats {
+            num_received_streams: AtomicU64::new(self.num_received_streams.load(Ordering::Relaxed)),
+            num_errored_streams: AtomicU64::new(self.num_errored_streams.load(Ordering::Relaxed)),
+            num_accepted_connections: AtomicU64::new(
+                self.num_accepted_connections.load(Ordering::Relaxed),
+            ),
+            num_refused_connections: AtomicU64::new(
+                self.num_refused_connections.load(Ordering::Relaxed),
+            ),
+            num_connection_errors: AtomicU64::new(
+                self.num_connection_errors.load(Ordering::Relaxed),
+            ),
+            num_finished_streams: AtomicU64::new(self.num_finished_streams.load(Ordering::Relaxed)),
+            num_received_bytes: AtomicU64::new(self.num_received_bytes.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Calculate and log the differences between two `Stats` instances
+    fn log_tps_bitrate(&self, previous: &Stats) {
+        let diff_finished_streams = self.num_finished_streams.load(Ordering::Relaxed)
+            - previous.num_finished_streams.load(Ordering::Relaxed);
+        let diff_received_bytes = self.num_received_bytes.load(Ordering::Relaxed)
+            - previous.num_received_bytes.load(Ordering::Relaxed);
+
+        info!(
+            "tps: {}, bitrate: {}",
+            diff_finished_streams,
+            format_as_bits(diff_received_bytes as f64)
+        );
+    }
 }
 
 #[tokio::main]
@@ -189,6 +230,8 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
     )?;
     let endpoint = create_server_endpoint(listen, server_config)?;
     info!("listening on {}", endpoint.local_addr()?);
+
+    run_report_stats_service(stats.clone(), token.clone()).await;
 
     loop {
         tokio::select! {
@@ -428,10 +471,9 @@ async fn handle_packet_bytes(
             .expect("Receiver should not be dropped.");
     }
 
-    stats.num_received_bytes.fetch_add(
-        (accum.chunks.len() * PACKET_DATA_SIZE) as u64,
-        Ordering::Relaxed,
-    );
+    stats
+        .num_received_bytes
+        .fetch_add((accum.meta.size) as u64, Ordering::Relaxed);
 }
 
 async fn run_reorder_log_service(
@@ -475,5 +517,26 @@ async fn run_reorder_log_service(
             }
         }
         writer.flush().await.unwrap();
+    });
+}
+
+async fn run_report_stats_service(stats: Arc<Stats>, token: CancellationToken) {
+    tokio::spawn({
+        async move {
+            let mut previous_stats = Stats::default();
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                _ = token.cancelled() => {
+                    println!("{stats:?}");
+                    break;
+                }
+                _ = interval.tick() => {
+                        stats.log_tps_bitrate(&previous_stats);
+                        previous_stats = stats.load_current();
+                    }
+                }
+            }
+        }
     });
 }
