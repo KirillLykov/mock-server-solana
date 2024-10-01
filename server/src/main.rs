@@ -28,6 +28,7 @@ use {
     pem::Pem,
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
+        format_as_bits::format_as_bits,
         packet_accumulator::{PacketAccumulator, PacketChunk},
         // This is the new certificate used in v2
         tls_certificates::new_dummy_x509_certificate,
@@ -187,7 +188,11 @@ impl Stats {
         let diff_received_bytes = self.num_received_bytes.load(Ordering::Relaxed)
             - previous.num_received_bytes.load(Ordering::Relaxed);
 
-        info!("tps: {diff_finished_streams}, bitrate: {diff_received_bytes}");
+        info!(
+            "tps: {}, bitrate: {}",
+            diff_finished_streams,
+            format_as_bits(diff_received_bytes as f64)
+        );
     }
 }
 

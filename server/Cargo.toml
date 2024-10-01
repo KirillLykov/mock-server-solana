@@ -6,7 +6,7 @@ edition = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-atty = "0.2"
+atty = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
