@@ -50,6 +50,9 @@ pub struct ClientCliParameters {
         default_value = "1"
     )]
     pub num_connections: usize,
+
+    #[clap(long, help = "Disable congestion control")]
+    pub disable_congestion: bool,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, &'static str> {
