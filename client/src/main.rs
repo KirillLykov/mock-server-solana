@@ -59,7 +59,7 @@ async fn run(parameters: ClientCliParameters) -> Result<(), QuicClientError> {
         } else {
             Arc::new(QuicClientCertificate::default())
         };
-    let client_config = create_client_config(client_certificate);
+    let client_config = create_client_config(client_certificate, parameters.disable_congestion);
 
     let mut tasks = JoinSet::new();
 
