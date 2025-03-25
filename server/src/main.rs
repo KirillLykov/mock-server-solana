@@ -24,12 +24,16 @@ use {
 };
 
 use {
+    // it is used in agave, so use it here for consistency
+    async_channel::{unbounded as async_unbounded, Sender as AsyncSender},
     chrono::Utc,
+    crossbeam_channel::unbounded as crossbeam_unbounded,
     pem::Pem,
     server::{
         cli::{build_cli_parameters, ServerCliParameters},
         format_as_bits::format_as_bits,
         packet_accumulator::{PacketAccumulator, PacketChunk},
+        packet_batch_sender::packet_batch_sender,
         // This is the new certificate used in v2
         tls_certificates::new_dummy_x509_certificate,
         QuicServerError,
@@ -38,6 +42,7 @@ use {
     },
     smallvec::SmallVec,
     solana_sdk::{
+        net::DEFAULT_TPU_COALESCE,
         packet::{Meta, PACKET_DATA_SIZE},
         signature::Keypair,
     },
@@ -233,6 +238,40 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
 
     run_report_stats_service(stats.clone(), token.clone()).await;
 
+    let (packet_sender, packet_receiver) = async_unbounded();
+
+    // in agave it is called the same as above but this creates ubiquity which I cannot withstand
+    let (consume_packets_sender, consume_packets_receiver) = crossbeam_unbounded();
+
+    // task to empty the receiver side, in agave it happens in SigVerifyStage
+    tokio::spawn({
+        let token = token.clone();
+        let mut num_packets = 0usize;
+        async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        break;
+                    }
+                    _ = time::sleep(Duration::from_millis(100)) => {
+                        // Empty channel, use try_recv() to avoid blocking the async context
+                        while let Ok(_packet) = consume_packets_receiver.try_recv() {
+                            num_packets += 1;
+                        }
+                    }
+                }
+            }
+            info!("SigVerify received {num_packets} packets.");
+        }
+    });
+
+    tokio::spawn(packet_batch_sender(
+        consume_packets_sender,
+        packet_receiver,
+        token.clone(),
+        DEFAULT_TPU_COALESCE,
+    ));
+
     loop {
         tokio::select! {
             _ = token.cancelled() => {
@@ -260,7 +299,7 @@ async fn run(options: ServerCliParameters) -> Result<(), QuicServerError> {
                         .num_accepted_connections
                         .fetch_add(1, Ordering::Relaxed);
                     let connection = conn.await?;
-                    let fut = handle_connection(connection, reordering_log_file.clone(), stats.clone(), token.clone());
+                    let fut = handle_connection(connection, packet_sender.clone(), reordering_log_file.clone(), stats.clone(), token.clone());
                     tokio::spawn(async move {
                         if let Err(e) = fut.await {
                             error!("connection failed: {reason}", reason = e.to_string())
@@ -299,6 +338,7 @@ impl From<&[u8]> for TxInfo {
 
 async fn handle_connection(
     connection: Connection,
+    packet_sender: AsyncSender<PacketAccumulator>,
     reordering_log_file: Option<String>,
     stats: Arc<Stats>,
     token: CancellationToken,
@@ -358,6 +398,7 @@ async fn handle_connection(
                 let res = handle_stream_chunk_accumulation(
                     chunk,
                     &mut packet_accum,
+                    &packet_sender,
                     &tx_info_sender,
                     &stats,
                 )
@@ -388,6 +429,7 @@ async fn handle_connection(
 async fn handle_stream_chunk_accumulation(
     chunk: Option<Chunk>,
     packet_accum: &mut Option<PacketAccumulator>,
+    packet_sender: &AsyncSender<PacketAccumulator>,
     tx_info_sender: &Option<UnboundedSender<TxInfo>>,
     stats: &Arc<Stats>,
 ) -> Result<bool, QuicServerError> {
@@ -395,7 +437,7 @@ async fn handle_stream_chunk_accumulation(
         //it means that the last chunk has been received, we put all the chunks
         //accumulated to some channel
         if let Some(accum) = packet_accum.take() {
-            handle_packet_bytes(accum, tx_info_sender, &stats).await;
+            handle_packet_bytes(accum, packet_sender, tx_info_sender, &stats).await;
         }
         return Ok(true);
     };
@@ -448,6 +490,7 @@ async fn handle_stream_chunk_accumulation(
 
 async fn handle_packet_bytes(
     accum: PacketAccumulator,
+    packet_sender: &AsyncSender<PacketAccumulator>,
     tx_info_sender: &Option<UnboundedSender<TxInfo>>,
     stats: &Arc<Stats>,
 ) {
@@ -474,6 +517,10 @@ async fn handle_packet_bytes(
     stats
         .num_received_bytes
         .fetch_add((accum.meta.size) as u64, Ordering::Relaxed);
+
+    if let Err(err) = packet_sender.send(accum).await {
+        warn!("Failed to send accum to the packet_sender, error: {err}.");
+    }
 }
 
 async fn run_reorder_log_service(

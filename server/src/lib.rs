@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod format_as_bits;
 pub mod packet_accumulator;
+pub mod packet_batch_sender;
 pub mod tls_certificates;
 
 #[cfg(feature = "use_quinn_11")]
