@@ -66,5 +66,4 @@ debug = 2
 #rustflags = ["-C", "force-frame-pointers=yes"]
 
 [patch.crates-io]
-#rustls-platform-verifier = { version = "0.5.1" }
 curve25519-dalek = { git = "https://github.com/anza-xyz/curve25519-dalek.git", rev = "b500cdc2a920cd5bff9e2dd974d7b97349d61464" }
