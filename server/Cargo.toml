@@ -15,10 +15,8 @@ futures = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 pem = { workspace = true }
-quinn-proto_11 = { workspace = true, optional = true}
-quinn-proto_master = { workspace = true,optional = true }
-quinn_11 = { workspace = true, optional = true}
-quinn_master = { workspace = true,optional = true }
+quinn-proto = { workspace = true}
+quinn = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rcgen = { workspace = true }
@@ -34,8 +32,3 @@ tracing = { workspace = true }
 tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 x509-parser = { workspace = true }
-
-[features]
-default = ["use_quinn_master"]
-use_quinn_11 = ["quinn_11", "quinn-proto_11"]
-use_quinn_master = ["quinn_master", "quinn-proto_master"]

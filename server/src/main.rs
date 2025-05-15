@@ -1,23 +1,7 @@
 //! This example demonstrates quic server for handling incoming transactions.
 //!
 //! Checkout the `README.md` for guidance.
-#[cfg(all(feature = "use_quinn_master", feature = "use_quinn_11"))]
-compile_error!(
-    "Features 'use_quinn_master' and 'use_quinn_11' are mutually exclusive.\
-Try `cargo build --no-default-features --features ...` instead."
-);
 
-#[cfg(feature = "use_quinn_11")]
-use quinn_11 as quinn;
-#[cfg(feature = "use_quinn_11")]
-use quinn_proto_11 as quinn_proto;
-
-#[cfg(feature = "use_quinn_master")]
-use quinn_master as quinn;
-#[cfg(feature = "use_quinn_master")]
-use quinn_proto_master as quinn_proto;
-
-#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
 use {
     quinn::{Chunk, Connection, ConnectionError, Endpoint, IdleTimeout, ServerConfig},
     quinn_proto::crypto::rustls::QuicServerConfig,

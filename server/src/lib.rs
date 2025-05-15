@@ -3,13 +3,6 @@ pub mod format_as_bits;
 pub mod packet_accumulator;
 pub mod tls_certificates;
 
-#[cfg(feature = "use_quinn_11")]
-use quinn_11 as quinn;
-
-#[cfg(feature = "use_quinn_master")]
-use quinn_master as quinn;
-
-#[cfg(any(feature = "use_quinn_11", feature = "use_quinn_master"))]
 use quinn::{crypto::rustls::NoInitialCipherSuite, ConnectionError};
 
 use {

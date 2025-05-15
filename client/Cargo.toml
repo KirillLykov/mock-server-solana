@@ -11,8 +11,7 @@ clap = { workspace = true, features = ["derive", "cargo"] }
 futures = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
-quinn_11 = { workspace = true, optional = true }
-quinn_master = { workspace = true, optional = true }
+quinn = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rcgen = { workspace = true }
@@ -27,8 +26,3 @@ tracing = { workspace = true }
 tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
-
-[features]
-default = ["use_quinn_master"]
-use_quinn_master = ["quinn_master"]
-use_quinn_11 = ["quinn_11"]
