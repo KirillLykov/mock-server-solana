@@ -22,22 +22,6 @@ $ ./client --target <IP>:8009 --duration 600 --num-connections 4
 
 Note that we don't use blockhash. This would require usage of RPC client.
 
-## Features
-
-Both client and server allows to select quinn version using features.
-To use `quinn 0.11.4` and `quinn-proto 0.11.7` (the same as agave atm), do the following:
-
-```shell
-cargo build --features "use_quinn_11" --no-default-features
-```
-
-To use quinn master (default), just don't specify any feature.
-
-
-## Questions
-
-1. There is a Controller trait which defines Congestion Control. What is the default implementation? Why don't we use it for stake?
-2. RW size and number of streams per connection are static by default? Or might be controlled by this Controller?
 
 ## What to change in the original client
 
